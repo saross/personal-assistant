@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -57,6 +58,8 @@ def test_trend_line_maps_all_fields() -> None:
         "ambiguous": 65,
         "repos": 36,
         "unusable": [],
+        "consulted": 0,
+        "degraded": False,
     }
 
 
@@ -577,9 +580,12 @@ def test_the_trend_row_names_the_repositories_left_out(
     row = ds.trend_line(result, as_of=FIXED_NOW)
     assert row["unusable"] == [str(broken)]
     assert row["repos"] == 2, "the discovered count is unchanged by exclusion"
+    assert row["consulted"] == 2, "and the walked set is reported beside it"
+    assert row["degraded"] is True
     rendered = ds._render(row)
-    assert "Repositories EXCLUDED (1)" in rendered
+    assert "Repositories EXCLUDED (1 of 2)" in rendered
     assert str(broken) in rendered
+    assert "DEGRADED" in rendered
 
 
 def test_a_clean_sweep_records_no_exclusions(tmp_path, monkeypatch) -> None:
@@ -619,3 +625,229 @@ def test_the_warning_names_where_the_floor_came_from(
                    encoding="utf-8")
     assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
     assert "came from the last logged sweep" in capsys.readouterr().err
+
+
+def test_the_exclusion_list_is_complete_however_anchors_resolve(
+    tmp_path, monkeypatch,
+) -> None:
+    """Six repositories, one emptied mount, every anchor resolving early.
+
+    Resolution returns on the first repository that says "true", so without
+    an eager probe the emptied mount is never reached and the row claims six
+    repositories while meaning five (round 4f-5, finding M1).
+
+    Kills the mutation removing ``av.probe_repos(repos)`` from run_sweep.
+    """
+    good = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+            for i in range(5)]
+    gone = _init_repo(tmp_path / "gone", "wiki/notes.md")
+    shutil.rmtree(gone)
+    gone.mkdir()                       # an emptied mount point
+    _pin_repos(monkeypatch, good + [gone], discovered=6)
+    ds.av.reset_unusable_repos()
+
+    # Twenty anchors that all resolve in the FIRST repository.
+    records = [_record(f"m-{i}", "wiki/notes.md", OLD) for i in range(20)]
+    result = ds.run_sweep(records, as_of=FIXED_NOW)
+
+    assert result["verdicts"]["true"] == 20, "every anchor resolved early"
+    assert result["unusable_repos"] == [str(gone)]
+
+
+def test_the_eager_probe_leaves_healthy_repositories_alone(
+    tmp_path, monkeypatch,
+) -> None:
+    """The control: nothing excluded when every repository answers."""
+    repos = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+             for i in range(3)]
+    _pin_repos(monkeypatch, repos, discovered=3)
+    ds.av.reset_unusable_repos()
+    result = ds.run_sweep(
+        [_record("m-1", "wiki/notes.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["unusable_repos"] == []
+
+
+# ============================================================================
+# A known gap is recorded, not refused (M5); a lone repository is not a set
+# (M6); the refusal with no override says so (L7)
+# ============================================================================
+
+
+def _degraded_corpus(tmp_path: Path, n_pending: int, n_ok: int) -> Path:
+    """A corpus whose refs live in the repository that will be taken away."""
+    rows = [_record(f"gone-{i}", "wiki/only-there.md", OLD)
+            for i in range(n_pending)]
+    rows += [_record(f"ok-{i}", "wiki/notes.md", OLD) for i in range(n_ok)]
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8",
+    )
+    return corpus
+
+
+def test_a_flaky_mount_writes_a_degraded_row_instead_of_refusing(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """25 % pending with a NAMED cause is a gap to record, not a refusal.
+
+    Before this the pending floor refused every sweep for as long as the
+    mount was away, and the gap in the series was invisible in [H].
+
+    Kills the mutation dropping ``and record["degraded"]`` from the floor:
+    the run refuses again and writes nothing.
+    """
+    good = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+            for i in range(3)]
+    gone = _init_repo(tmp_path / "gone", "wiki/notes.md")
+    shutil.rmtree(gone)
+    gone.mkdir()
+    _pin_repos(monkeypatch, good + [gone], discovered=4)
+    ds.av.reset_unusable_repos()
+    log = tmp_path / "d.jsonl"
+
+    rc = ds.main([
+        "--memories", str(_degraded_corpus(tmp_path, 5, 15)),
+        "--log-path", str(log), "--min-repos", "0",
+    ])
+    assert rc == 0
+    row = json.loads(log.read_text(encoding="utf-8").strip())
+    assert row["degraded"] is True
+    assert row["unusable"] == [str(gone)]
+    assert "logging a DEGRADED row" in capsys.readouterr().err
+
+
+def test_a_degraded_row_sets_no_floor(tmp_path) -> None:
+    """The flag has to be honoured by the reader, not just written.
+
+    Kills the mutation dropping the ``degraded`` skip in last_repo_count: a
+    run that could not consult every repository would set the yardstick for
+    the next one.
+    """
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01", "repos": 9, "degraded": False})
+        + "\n"
+        + json.dumps({"run_at": "2031-01-08", "repos": 4, "degraded": True})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert ds.last_repo_count(log) == 9
+
+
+def test_an_unexplained_pending_rate_still_refuses(tmp_path, monkeypatch) -> None:
+    """The control: the floor is unchanged when nothing was excluded."""
+    _fixed_sweep(monkeypatch, dict(
+        SAMPLE_RESULT, verdicts={"true": 100, "pending": 900},
+        anchored_in_window=1000, fail_count=0, fail_rate_pct=0.0,
+        unusable_repos=[],
+    ))
+    log = tmp_path / "d.jsonl"
+    assert ds.main(["--log-path", str(log)]) == 2
+    assert not log.exists()
+
+
+def test_a_lone_repository_is_not_a_repository_set(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """Discovery of one repository must not sweep and set a floor of 1.
+
+    Kills the mutation removing the MIN_DISCOVERED_REPOS fallback: the run
+    exits 0, writes fail_pct 100.0 against a single repository, and the next
+    run's floor becomes 1.
+    """
+    only = _init_repo(tmp_path / "only", "wiki/notes.md")
+    _pin_repos(monkeypatch, [only], discovered=1)
+    ds.av.reset_unusable_repos()
+    log = tmp_path / "d.jsonl"
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/gone.md", OLD)) + "\n", encoding="utf-8",
+    )
+
+    rc = ds.main(["--memories", str(corpus), "--log-path", str(log)])
+    assert rc == 2
+    assert not log.exists()
+    err = capsys.readouterr().err
+    assert f"the floor of {ds.MIN_DISCOVERED_REPOS}" in err
+    assert "the built-in minimum" in err
+
+
+def test_the_built_in_minimum_yields_to_a_recorded_count(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """A clean row in the log takes over from the constant."""
+    repos = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+             for i in range(4)]
+    _pin_repos(monkeypatch, repos, discovered=4)
+    ds.av.reset_unusable_repos()
+    log = tmp_path / "d.jsonl"
+    log.write_text(
+        json.dumps({"run_at": "2031-01-01", "repos": 9, "degraded": False})
+        + "\n", encoding="utf-8",
+    )
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log)]) == 2
+    assert "came from the last logged sweep" in capsys.readouterr().err
+
+
+def test_the_built_in_minimum_is_overridable(tmp_path, monkeypatch) -> None:
+    """--min-repos still wins: it is an operator statement of fact."""
+    only = _init_repo(tmp_path / "only", "wiki/notes.md")
+    _pin_repos(monkeypatch, [only], discovered=1)
+    ds.av.reset_unusable_repos()
+    log = tmp_path / "d.jsonl"
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text(
+        json.dumps(_record("m-1", "wiki/notes.md", OLD)) + "\n", encoding="utf-8",
+    )
+    assert ds.main(["--memories", str(corpus), "--log-path", str(log),
+                    "--min-repos", "1"]) == 0
+
+
+def test_the_no_discovery_refusal_says_there_is_no_override(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """RepoSetUnavailable has no escape hatch, and must not imply one (L7)."""
+    monkeypatch.setattr(ds.ta.project_id, "repo_set", list)
+    monkeypatch.setattr(ds.ta, "PA_DIR", tmp_path / "nowhere")
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text("", encoding="utf-8")
+    assert ds.main(["--memories", str(corpus),
+                    "--log-path", str(tmp_path / "d.jsonl"),
+                    "--min-repos", "0"]) == 2
+    err = capsys.readouterr().err
+    assert "no override" in err
+    assert "fix discovery" in err
+
+
+def test_the_sweep_clears_stale_exclusions(tmp_path, monkeypatch) -> None:
+    """A previous call's exclusion must not appear in this row (L11)."""
+    repos = [_init_repo(tmp_path / f"good-{i}", "wiki/notes.md")
+             for i in range(3)]
+    _pin_repos(monkeypatch, repos, discovered=3)
+    ds.av.reset_unusable_repos()
+    ds.av.note_unusable_repo(Path("/some/earlier/run"), "stale")
+    result = ds.run_sweep(
+        [_record("m-1", "wiki/notes.md", OLD)], as_of=FIXED_NOW,
+    )
+    assert result["unusable_repos"] == []
+
+
+def test_the_exclusion_list_is_sorted() -> None:
+    """Two rows must compare equal whatever order the probes ran in (L12).
+
+    Kills the mutation ``sorted(...)`` -> ``list(...)`` in trend_line: the
+    order repositories were probed in is an implementation detail of
+    discovery, and a reader diffing two rows would see a change that is not
+    one. The input here is deliberately UNSORTED.
+    """
+    row = ds.trend_line(
+        {"unusable_repos": ["/zzz-last", "/aaa-first"], "repo_count": 2,
+         "repos_consulted": 2},
+        as_of=FIXED_NOW,
+    )
+    assert row["unusable"] == ["/aaa-first", "/zzz-last"]

@@ -435,7 +435,15 @@ def drift_trend(lines: list[str]) -> dict[str, Any]:
 
     Each line is one JSON sweep record (written by ``drift-sweep.py``). Pure;
     tolerant — a malformed line is skipped. Returns ``runs`` count, the
-    ``latest`` record, and the last 8 records' ``fail_pct`` history for a trend.
+    ``latest`` record, the last 8 records' ``fail_pct`` history for a trend,
+    the repositories the latest run had to exclude, and how many runs in that
+    window were degraded.
+
+    The exclusion list was written to every row by the sweep and read by
+    nobody: ``[F]`` renders it but only under ``--tier-c``, which
+    ``/weekly-review`` does not pass, and the sweep's own stdout goes to a
+    cron that discards it. ``[H]`` reads the log unconditionally, so this is
+    the standing surface for it (round 4f-5, finding M2).
     """
     runs: list[dict] = []
     for ln in lines:
@@ -447,17 +455,28 @@ def drift_trend(lines: list[str]) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
     if not runs:
-        return {"runs": 0, "latest": None, "history": []}
+        return {
+            "runs": 0, "latest": None, "history": [],
+            "latest_unusable": [], "degraded_in_window": 0,
+        }
+    window = runs[-8:]
     history = [
         {
             "run_at": r.get("run_at"),
             "fail_pct": r.get("fail_pct"),
             "total_anchored": r.get("total_anchored"),
             "fail": r.get("fail"),
+            "degraded": bool(r.get("degraded")),
         }
-        for r in runs[-8:]
+        for r in window
     ]
-    return {"runs": len(runs), "latest": runs[-1], "history": history}
+    return {
+        "runs": len(runs),
+        "latest": runs[-1],
+        "history": history,
+        "latest_unusable": list(runs[-1].get("unusable") or []),
+        "degraded_in_window": sum(1 for r in window if r.get("degraded")),
+    }
 
 
 # ============================================================================
@@ -874,8 +893,28 @@ def render_report(report: dict[str, Any]) -> list[str]:
             f"fail = {lat.get('fail_pct')}%"
         )
         if len(dt["history"]) > 1:
-            trend = " → ".join(f"{h['fail_pct']}%" for h in dt["history"])
+            # A degraded run measured a smaller repository set; mark it in
+            # the series rather than letting it read as a clean data point.
+            trend = " → ".join(
+                f"{h['fail_pct']}%" + ("*" if h.get("degraded") else "")
+                for h in dt["history"]
+            )
             out.append(f"  fail% trend (last {len(dt['history'])}) : {trend}")
+        unusable = dt.get("latest_unusable") or []
+        if unusable:
+            out.append(
+                f"  repositories EXCLUDED   : {len(unusable)} in the latest "
+                "run; their anchors read pending, not absent"
+            )
+            for path in unusable:
+                out.append(f"    - {path}")
+        degraded = dt.get("degraded_in_window", 0)
+        if degraded:
+            out.append(
+                f"  * {degraded} of the last {len(dt['history'])} run(s) were "
+                "DEGRADED — a repository could not be consulted, so the floor "
+                "and the fail% comparison skip them"
+            )
 
     out.append("\n" + "=" * 72)
     return out
@@ -1035,8 +1074,11 @@ def build_report(
             report["tier_c_skipped"] = f"repository discovery failed ({exc})"
             return report, clean
         # Clean registry: [F] below reports the repositories THIS run had to
-        # leave out (finding M-b).
+        # leave out (finding M-b), and every repository is asked once up
+        # front so that list is complete however the anchors resolve
+        # (finding M1).
         av.reset_unusable_repos()
+        av.probe_repos(repos)
         basename_index = ta.build_basename_index(repos)
         # Memoised per (resolver, ref): verify_file walks every repository and
         # spawns up to two git processes each, and tier_c_audit re-resolves
