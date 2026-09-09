@@ -547,15 +547,29 @@ def test_provenance_describes_the_calling_script_not_this_module(tmp_path):
 
 
 def test_an_explicit_script_path_wins(tmp_path):
-    """The inference is a default, not a mandate: callers can be explicit."""
-    repo, _run = _throwaway_repo(tmp_path)
+    """The inference is a default, not a mandate: callers can be explicit.
+
+    Both halves are built here rather than assumed: a file inside a
+    throwaway repository, and one outside every repository. Asserting only
+    the "outside" half was vacuous in a git-archive export, where the whole
+    tree is outside a repository and the test passed without the parameter
+    doing anything (round 4g-5, item L-c2).
+    """
+    repo, run = _throwaway_repo(tmp_path)
     stranger = tmp_path / "outside-any-repo.py"
     stranger.write_text("# not in a repository\n", encoding="utf-8")
 
-    block = style_support.provenance_block("demo.py", script_path=stranger)
+    outside = style_support.provenance_block("demo.py", script_path=stranger)
+    assert outside["git_commit"] is None
+    assert outside["git_note"] == "not inside a git repository"
 
-    assert block["git_commit"] is None
-    assert block["git_note"] == "not inside a git repository"
+    # The same call, pointed at a tracked file, records that repository —
+    # so the parameter is doing the work, not the surroundings.
+    inside = style_support.provenance_block(
+        "demo.py", script_path=repo / "script.py")
+    assert inside["git_commit"] == run("rev-parse", "HEAD").stdout.strip()
+    # `git_note` is written only when there is something to explain.
+    assert "git_note" not in inside
 
 
 # ---------------------------------------------------------------------------
@@ -635,3 +649,24 @@ def test_a_json_document_that_is_not_an_object_is_refused(tmp_path):
 def test_no_paths_is_no_payloads_and_no_error():
     """An empty list is a legitimate call (a consumer with nothing optional)."""
     assert style_support.load_checked_payloads([]) == ([], None)
+
+
+def test_a_caller_with_no_file_is_reported_not_absorbed(tmp_path):
+    """`exec` of a string has no ``__file__``, and must not borrow ours.
+
+    Falling back to ``git_state()``'s own default describes style_support.py
+    and hands back a commit that says nothing about the code that ran — the
+    L3 bug, re-entered through the one caller shape the inference cannot
+    resolve. The mutation this kills: dropping the ``hint is None`` branch so
+    the fallback returns.
+    """
+    captured: dict[str, dict] = {}
+    exec(  # noqa: S102 — exercising precisely the no-__file__ caller shape
+        "captured['block'] = style_support.provenance_block('exec.py')",
+        {"style_support": style_support, "captured": captured},
+    )
+    block = captured["block"]
+
+    assert block["git_commit"] is None
+    assert block["git_dirty"] is None
+    assert "no __file__" in block["git_note"]

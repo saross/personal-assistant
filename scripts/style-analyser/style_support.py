@@ -373,8 +373,19 @@ def provenance_block(script: str,
     owns — silently replacing ``inputs`` or ``git_commit`` with a caller's
     value would make provenance say something the writer did not mean.
     """
-    state = git_state(script_path if script_path is not None
-                      else _calling_script())
+    hint = script_path if script_path is not None else _calling_script()
+    if hint is None:
+        # No ``__file__`` on the caller: exec'd source, ``python -c``, or an
+        # interactive session. Falling through to git_state()'s own default
+        # would describe THIS module and hand back a commit that says nothing
+        # about the code that ran — the very bug item L3 fixed, re-entered by
+        # the back door (round 4g-5, item L-c1).
+        state = {"commit": None, "dirty": None, "root": None,
+                 "reason": "the calling script has no __file__ (exec'd "
+                           "source, python -c, or an interactive session), "
+                           "so no repository state describes it"}
+    else:
+        state = git_state(hint)
     record: dict[str, Any] = {
         "script": script,
         "git_commit": state["commit"],
