@@ -42,6 +42,7 @@ import gzip
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -109,6 +110,53 @@ def gz_meta_block(meta: dict, gz_path: Path) -> dict:
     return block
 
 
+#: A staged write in this pipeline completes in milliseconds, so a ``.tmp``
+#: older than this was abandoned by a killed process. Comparing against the
+#: run's own start time is not enough: a CONCURRENT normalise pass that began
+#: a second before this one would have its in-flight staging swept out from
+#: under it. An age threshold cannot make that mistake.
+STALE_TEMP_MIN_AGE_SECONDS = 3600
+
+
+def sweep_stale_temporaries(root: Path, started_at: float, *, apply: bool
+                            ) -> list[Path]:
+    """Remove ``*.tmp`` files under *root* left by an earlier interrupted run.
+
+    The staged writes this script and ``bulk-archive.py`` use (findings AR14,
+    AR9, and round 4c-2 finding 9) leave a ``session.jsonl.gz.tmp`` behind
+    when the process is killed between the write and the rename. Nothing
+    cleaned them up, and they are not inert: ``push-archives-to-r2.sh``
+    mirrors the archive root wholesale, so a partial temporary became a
+    PERMANENT object in R2 — permanent because the push is ``--immutable``
+    and never deletes, so the half-written file could not be replaced or
+    removed once uploaded (audit round 4c-3, finding L-10).
+
+    Only files at least :data:`STALE_TEMP_MIN_AGE_SECONDS` old are swept, so
+    a temporary belonging to a concurrent normalise pass — or to this one —
+    is never removed, whichever run started first.
+
+    Returns the paths swept (or, in dry-run, those that would be).
+    """
+    cutoff = started_at - STALE_TEMP_MIN_AGE_SECONDS
+    swept: list[Path] = []
+    for tmp_file in sorted(root.rglob("*.tmp")):
+        try:
+            if tmp_file.stat().st_mtime > cutoff:
+                continue          # too recent to be abandoned
+        except OSError:
+            continue
+        swept.append(tmp_file)
+        print(f"[stale-temp{'' if apply else ' — would remove'}] "
+              f"{tmp_file.relative_to(root)}")
+        if apply:
+            try:
+                tmp_file.unlink()
+            except OSError as exc:
+                print(f"[ERROR] cannot remove {tmp_file}: {exc}",
+                      file=sys.stderr)
+    return swept
+
+
 def main(argv: list[str] | None = None) -> int:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -121,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root).expanduser()
     if not root.is_dir():
         parser.error(f"root not found: {root}")
+
+    # Recorded before any work, so the sweep below can tell an abandoned
+    # temporary from one this run is about to create.
+    started_at = time.time()
+    n_stale_temp = len(sweep_stale_temporaries(root, started_at,
+                                               apply=args.apply))
 
     n_raw_only = n_dual_same = n_dual_prefix = n_divergent = n_ok = n_err = 0
     n_stale_meta = 0
@@ -195,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "APPLIED" if args.apply else "DRY-RUN"
     print(f"\n{mode}: raw-only={n_raw_only} dual-identical={n_dual_same} "
           f"dual-prefix={n_dual_prefix} divergent={n_divergent} "
-          f"stale-meta={n_stale_meta} "
+          f"stale-meta={n_stale_meta} stale-temp={n_stale_temp} "
           f"already-canonical={n_ok} errors={n_err}")
     return 1 if (n_err or n_divergent) else 0
 

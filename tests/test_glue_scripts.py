@@ -1318,6 +1318,37 @@ class TestR2PushSafety:
             in env_text
         )
 
+    def test_an_unquoted_hash_survives_but_a_comment_does_not(
+        self, sandbox
+    ) -> None:
+        """The strip must key on the SPACE before the '#', not the '#'.
+
+        `${value%%#*}` passes every quoted-secret test — those take the
+        quote branch and never reach here — while silently truncating an
+        unquoted credential at its first '#' (round 4c-3, finding L-3).
+        """
+        (sandbox.pa_dir / ".env").write_text(
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented   "
+            "# rotated 2026-03-02\n"
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2#secret#invented\n",
+            encoding="utf-8",
+        )
+
+        assert self._run(sandbox, credentials=False).returncode == 0
+
+        env_text = sandbox.env_log.read_text(encoding="utf-8")
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_ACCESS_KEY_ID=r2#id#invented\n"
+            in env_text
+        ), (
+            "an unquoted credential was truncated at its first '#'; the "
+            "comment strip must require whitespace before the marker"
+        )
+        assert (
+            "RCLONE_CONFIG_R2ARCHIVES_SECRET_ACCESS_KEY=r2#secret#invented\n"
+            in env_text
+        )
+
     def test_a_hash_inside_a_quoted_secret_survives(self, sandbox) -> None:
         """The comment strip must not eat a '#' that is part of the key."""
         (sandbox.pa_dir / ".env").write_text(
@@ -1352,6 +1383,62 @@ class TestR2PushSafety:
         assert result.returncode == 3, result.stdout + result.stderr
         assert "ABORTED" in result.stdout + result.stderr
 
+    def _rclone_writing(self, sandbox, message: str) -> None:
+        """Replace the stub with one that logs *message* and fails."""
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'echo {message!r} >> {sandbox.pa_dir}/logs/r2-push.log\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+    def test_a_stale_immutable_line_does_not_latch_exit_three(
+        self, sandbox
+    ) -> None:
+        """The log is append-only and shared with every previous run.
+
+        Grepping the whole file latched: this script's own ABORTED message
+        contains the word "--immutable", so one genuine abort made every
+        later transport failure exit 3 for ever, and no amount of fixing the
+        archive could get back to "safe to retry" (round 4c-3, finding M-1).
+        """
+        # A real abort happens first, and writes its own ABORTED line.
+        self._rclone_writing(
+            sandbox,
+            "ERROR: session.jsonl.gz: Source and destination exist but do "
+            "not match: immutable file modified",
+        )
+        assert self._run(sandbox).returncode == 3
+
+        # A later, unrelated network failure must be classified on its own.
+        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        result = self._run(sandbox)
+
+        assert result.returncode == 2, (
+            "a stale immutable line from an earlier run latched exit 3; the "
+            "log carries every run, so the classification must not"
+        )
+        assert "safe to retry" in result.stdout + result.stderr
+
+    def test_a_fresh_immutable_abort_is_still_classified(
+        self, sandbox
+    ) -> None:
+        """Reading only this run's bytes must not blind the check."""
+        self._rclone_writing(sandbox, "ERROR: dial tcp: lookup failed")
+        assert self._run(sandbox).returncode == 2
+
+        self._rclone_writing(
+            sandbox,
+            "ERROR: session.jsonl.gz: immutable file modified",
+        )
+        result = self._run(sandbox)
+
+        assert result.returncode == 3
+        assert "ABORTED" in result.stdout + result.stderr
+
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
         sandbox.rclone.write_text(
@@ -1369,6 +1456,23 @@ class TestR2PushSafety:
 
         assert result.returncode == 2
         assert "safe to retry" in result.stdout + result.stderr
+
+    def test_staged_temporaries_are_excluded_from_the_push(
+        self, sandbox
+    ) -> None:
+        """L-10's other half: never upload a half-written file.
+
+        The push is --immutable and never deletes, so a partial `.tmp`
+        uploaded once becomes a permanent object in R2 that cannot be
+        replaced or removed.
+        """
+        assert self._run(sandbox).returncode == 0
+
+        argv = self._argv(sandbox)
+        assert "--exclude" in argv, f"no exclusion passed to rclone: {argv}"
+        assert "*.tmp" in argv, (
+            f"staged temporaries are not excluded from the push: {argv}"
+        )
 
 
 # ----------------------------------------------------------------------------

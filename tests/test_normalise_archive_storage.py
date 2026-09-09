@@ -19,7 +19,9 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -51,6 +53,13 @@ RAW_BODY = (
 EXTRA_BODY = (
     '{"type": "user", "message": {"role": "user", "content": "Second turn."}}\n'
 )
+
+
+
+def _age(path: Path, *, seconds: float) -> None:
+    """Backdate *path*'s mtime, so the staleness threshold can be tested."""
+    when = time.time() - seconds
+    os.utime(path, (when, when))
 
 
 def _entry(
@@ -345,3 +354,70 @@ class TestRawOnlyCompressionIsStaged:
         assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
 
         assert list(entry.glob("*.tmp")) == []
+
+
+class TestStaleTemporariesAreSwept:
+    """Round 4c-3 finding L-10 — an abandoned .tmp is not inert.
+
+    The staged writes across this pipeline leave `<name>.tmp` behind when a
+    process is killed between the write and the rename, and nothing cleaned
+    them up. push-archives-to-r2.sh mirrors the archive root wholesale, so a
+    partial temporary became a PERMANENT object in R2 -- permanent because
+    that push is --immutable and never deletes, so the half-written file
+    could not afterwards be replaced or removed.
+    """
+
+    def test_an_abandoned_temporary_is_removed(self, tmp_path: Path) -> None:
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        stale = entry / "session.jsonl.gz.tmp"
+        stale.write_bytes(b"\x1f\x8b partial")
+        _age(stale, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert not stale.exists(), (
+            "an abandoned temporary was left for the R2 push to upload as a "
+            "permanent immutable object"
+        )
+
+    def test_dry_run_reports_but_does_not_remove(self, tmp_path: Path) -> None:
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        stale = entry / "session.jsonl.gz.tmp"
+        stale.write_bytes(b"partial")
+        _age(stale, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        result = normalise.main(["--root", str(tmp_path)])
+
+        assert result == 0
+        assert stale.exists()
+
+    def test_a_recent_temporary_is_left_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """A concurrent normalise pass must not have its staging deleted.
+
+        An age threshold rather than a comparison against this run's start
+        time: a concurrent pass that began a second earlier would fail the
+        start-time test and have its in-flight file swept.
+        """
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        fresh = entry / "session.jsonl.gz.tmp"
+        fresh.write_bytes(b"another run is mid-write")
+
+        assert normalise.main(["--root", str(tmp_path), "--apply"]) == 0
+
+        assert fresh.exists(), (
+            "a temporary belonging to a concurrent run was swept"
+        )
+
+    def test_the_sweep_is_counted_in_the_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        entry = _entry(tmp_path, gz=RAW_BODY, jsonl_path="session.jsonl.gz")
+        stale = entry / "session.jsonl.gz.tmp"
+        stale.write_bytes(b"partial")
+        _age(stale, seconds=2 * normalise.STALE_TEMP_MIN_AGE_SECONDS)
+
+        normalise.main(["--root", str(tmp_path), "--apply"])
+
+        assert "stale-temp=1" in capsys.readouterr().out
