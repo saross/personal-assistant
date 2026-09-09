@@ -179,11 +179,24 @@ if [[ ! -f "$LOCAL" ]]; then
     # Round 4d-4 (M2): this used to advise `git submodule update --init`,
     # which is the one command that cannot help when data/ exists and is
     # not empty — git refuses to clone into a non-empty directory
-    # (verified against git 2.48.1). Say which of the two states this is,
-    # and give the remedy that fits it.
-    if [[ -d "$PA_DIR/data" ]] && [[ -n "$(ls -A "$PA_DIR/data" 2>/dev/null)" ]]; then
-        echo "  data/ exists and is not empty, so the submodule cannot be" >&2
-        echo "  cloned into it. Remove $PA_DIR/data entirely, then run:" >&2
+    # (verified against git 2.48.1).
+    #
+    # Round 4d-5 (C1): "not empty" was the WRONG test for choosing between
+    # the two remedies. An initialised submodule is also non-empty, so a
+    # perfectly healthy data/ that merely lacked this one file was met with
+    # "Remove $PA_DIR/data entirely" — advice that destroys uncommitted
+    # work in the private pa-data submodule. Branch on whether the
+    # submodule has a CHECKOUT (git leaves a .git file inside one) rather
+    # than on whether the directory has bytes in it.
+    if [[ -e "$PA_DIR/data/.git" ]]; then
+        echo "  data/ is initialised, so this is a missing file inside the" >&2
+        echo "  submodule rather than a missing submodule. Look there:" >&2
+        echo "    git -C $PA_DIR/data status -- global-claude-md/" >&2
+        echo "  Do NOT delete $PA_DIR/data: it is the private pa-data" >&2
+        echo "  submodule and may hold uncommitted work." >&2
+    elif [[ -d "$PA_DIR/data" ]] && [[ -n "$(ls -A "$PA_DIR/data" 2>/dev/null)" ]]; then
+        echo "  data/ exists, is not empty, and has no submodule checkout," >&2
+        echo "  so git cannot clone into it. Remove $PA_DIR/data, then run:" >&2
         echo "    git -C $PA_DIR submodule update --init" >&2
     else
         echo "  (Is the data submodule initialised?" \

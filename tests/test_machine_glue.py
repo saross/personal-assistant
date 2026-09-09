@@ -75,13 +75,19 @@ def write_stub(bin_dir: Path, name: str, log: Path, exit_code: int = 0) -> None:
 
 def write_git_stub(bin_dir: Path, log: Path) -> None:
     """
-    Write a ``git`` stub that records argv and answers ``submodule status``.
+    Write a ``git`` stub that records argv and stands in for two commands.
 
     ``sync-symlinks.sh`` decides whether to initialise the data submodule
-    from what git reports, so the stub has to answer that one query. The
-    answer comes from ``STUB_SUBMODULE_STATUS`` so each test states the
-    repository shape it is describing; everything else is recorded and
-    exits 0.
+    from what git reports, so the stub answers ``submodule status`` from
+    ``STUB_SUBMODULE_STATUS`` -- each test states the repository shape it
+    is describing.
+
+    Round 4d-5 (M-b): it must also POPULATE the submodule on
+    ``submodule update``, as real git does. Without that, no test could
+    reach the fresh-clone happy path: the init "succeeded", data/ stayed
+    empty, and the run then exited 1 at the step-7 pre-check for a file
+    the init should have produced. Several tests were quietly inspecting
+    failing runs.
 
     Args:
         bin_dir: Directory placed first on ``PATH``.
@@ -96,11 +102,58 @@ def write_git_stub(bin_dir: Path, log: Path) -> None:
         f'printf "\\n" >> {shlex.quote(str(log))}\n'
         'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
         '    printf "%s\\n" "${STUB_SUBMODULE_STATUS:-}"\n'
+        'elif [[ "${1:-}" == "submodule" && "${2:-}" == "update" ]]; then\n'
+        "    # Real git clones the submodule here, leaving a checkout with\n"
+        "    # a .git file in it. Reproduce enough of that for the steps\n"
+        "    # downstream to behave as they would on a real machine.\n"
+        '    if [[ -n "${STUB_SUBMODULE_POPULATES:-}" ]]; then\n'
+        '        mkdir -p "$STUB_SUBMODULE_POPULATES/global-claude-md"\n'
+        '        printf "# Local\\n\\nMARKER-LOCAL\\n" \\\n'
+        '            > "$STUB_SUBMODULE_POPULATES/global-claude-md/local.md"\n'
+        '        printf "gitdir: ../.git/modules/data\\n" \\\n'
+        '            > "$STUB_SUBMODULE_POPULATES/.git"\n'
+        "    fi\n"
         "fi\n"
         "exit 0\n",
         encoding="utf-8",
     )
     stub.chmod(0o755)
+
+
+def write_compose_recorder(pa_dir: Path, log: Path) -> None:
+    """
+    Put a recording wrapper in front of the real composer.
+
+    ``sync-symlinks.sh`` sends the composer's stdout to /dev/null, so
+    "was step 7 consulted at all?" is otherwise unobservable -- and
+    replacing the whole dry-run passthrough with ``:`` survived the suite
+    (round 4d-5, survivor iii). The wrapper logs its argv and then execs
+    the real script, so behaviour is unchanged and the call is visible.
+
+    Args:
+        pa_dir: The synthetic PA_DIR whose scripts/ holds the composer.
+        log: The shared argv log.
+    """
+    wrapper = pa_dir / "scripts" / "compose-global-claude-md.sh"
+    if wrapper.exists() or wrapper.is_symlink():
+        wrapper.unlink()
+    # The real script is reached through a symlink INSIDE the sandbox's
+    # scripts/ directory, so its own SCRIPT_DIR/PA_DIR still resolve to
+    # the sandbox. Exec'ing it at its real path would point the composer
+    # at this repository instead.
+    real = pa_dir / "scripts" / ".compose-real.sh"
+    if real.exists() or real.is_symlink():
+        real.unlink()
+    real.symlink_to(COMPOSE_SCRIPT)
+    wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "compose" >> {shlex.quote(str(log))}\n'
+        f'for a in "$@"; do printf " %s" "$a" >> {shlex.quote(str(log))}; done\n'
+        f'printf "\\n" >> {shlex.quote(str(log))}\n'
+        f"exec bash {shlex.quote(str(real))} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
 
 
 def run_script(
@@ -210,6 +263,7 @@ def sync_sandbox(tmp_path: Path) -> dict[str, Path]:
     log = tmp_path / "argv.log"
     log.write_text("", encoding="utf-8")
     write_git_stub(bin_dir, log)
+    write_compose_recorder(pa_dir, log)
     # An ORDINARY CLONE: .git is a DIRECTORY. Round 4d-4 (M3): the sandbox
     # used to have no .git at all, so `[ -f "$PA_DIR/.git" ]` was false for
     # the wrong reason in every clone test and relaxing it to `[ -e ... ]`
@@ -262,7 +316,12 @@ def _run_sync(
         home=sandbox["home"],
         path_prefix=sandbox["bin"],
         cwd=sandbox["pa_dir"],
-        extra_env={"STUB_SUBMODULE_STATUS": submodule_status},
+        extra_env={
+            "STUB_SUBMODULE_STATUS": submodule_status,
+            # Where the stub git materialises a submodule checkout when
+            # `submodule update` runs, as real git would.
+            "STUB_SUBMODULE_POPULATES": str(sandbox["pa_dir"] / "data"),
+        },
     )
 
 
@@ -446,12 +505,20 @@ class TestSubmoduleUpdateIsGated:
         for child in sorted(data.rglob("*"), reverse=True):
             child.unlink() if child.is_file() else child.rmdir()
 
-        _run_sync(
+        result = _run_sync(
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
 
         recorded = sync_sandbox["log"].read_text(encoding="utf-8")
         assert "git submodule update --init --recursive --quiet" in recorded
+        # Round 4d-5 (M-b): the stub now populates data/ as real git does,
+        # so the fresh-clone path can actually be asserted to SUCCEED. It
+        # used to exit 1 at the step-7 pre-check for the very file the
+        # init should have produced, and nothing noticed.
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md"
+        ).is_file()
 
     def test_quiet_suppresses_the_submodule_ready_line(
         self, sync_sandbox: dict[str, Path]
@@ -470,6 +537,7 @@ class TestSubmoduleUpdateIsGated:
             sync_sandbox, "--quiet", submodule_status="-1234abcd data"
         )
 
+        assert quiet.returncode == 0, quiet.stdout + quiet.stderr
         assert "Submodule ready." not in quiet.stdout, quiet.stdout
 
     def test_without_quiet_the_submodule_ready_line_is_printed(
@@ -482,6 +550,7 @@ class TestSubmoduleUpdateIsGated:
 
         loud = _run_sync(sync_sandbox, submodule_status="-1234abcd data")
 
+        assert loud.returncode == 0, loud.stdout + loud.stderr
         assert "Submodule ready." in loud.stdout, loud.stdout
 
     def test_a_non_empty_data_reports_rather_than_attempting_the_init(
@@ -561,6 +630,10 @@ class TestSubmoduleUpdateIsGated:
         assert "belongs to the main checkout" not in result.stdout, (
             "a plain clone was reported as a worktree"
         )
+        # The whole run has to succeed, not merely reach the init (M-b).
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "[8/8]" in result.stdout, result.stdout
+        assert (sync_sandbox["home"] / ".claude" / "CLAUDE.md").is_file()
 
     def test_the_worktree_skip_reads_the_checkout_not_the_flag(
         self, sync_sandbox: dict[str, Path]
@@ -795,6 +868,226 @@ class TestComposerNamesTheRightRemedy:
 
         assert result.returncode == 1
         assert "submodule update --init" in result.stderr
+
+
+class TestDryRunNeverFailsWhereARealRunSucceeds:
+    """M-a — a preview exiting 1 where the real run exits 0.
+
+    The --dry-run exemption sat on the whole pre-check, so a preview never
+    set SKIP_COMPOSE, step 7 ran the composer anyway, and the composer
+    died on the very file the pre-check had just established was missing.
+    """
+
+    def test_a_worktree_dry_run_exits_zero_and_skips_step_seven(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The real worktree run exits 0; the preview must too."""
+        _make_worktree(sync_sandbox["pa_dir"])
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(
+            sync_sandbox,
+            "--allow-worktree",
+            "--dry-run",
+            submodule_status="-1234abcd data",
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "SKIPPED:" in result.stdout, result.stdout
+        assert "[8/8]" in result.stdout, result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_a_broken_clone_dry_run_narrates_to_the_end(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L-c, decided here: a preview runs to step 8 and exits 0.
+
+        A preview changes nothing, so it must not fail, and one that stops
+        two thirds of the way through is not a preview. It says plainly
+        that a real run would refuse, then narrates the rest.
+        """
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "stray.md").write_text("x\n", encoding="utf-8")
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "a REAL run would" in result.stdout
+        assert "[8/8]" in result.stdout, result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_a_healthy_dry_run_actually_consults_the_composer(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """Survivor (iii): replacing the passthrough with `:` was invisible.
+
+        sync-symlinks sends the composer's stdout to /dev/null, so "was
+        step 7 consulted?" needs the recording wrapper to answer.
+        """
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(sync_sandbox, "--dry-run")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "[8/8]" in result.stdout, result.stdout
+        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
+        assert "compose --dry-run" in recorded, recorded
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_a_healthy_real_run_consults_the_composer_without_dry_run(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The negative half: a real run passes no --dry-run through."""
+        result = _run_sync(sync_sandbox)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        recorded = sync_sandbox["log"].read_text(encoding="utf-8")
+        compose_calls = [
+            line for line in recorded.splitlines()
+            if line.startswith("compose")
+        ]
+        assert compose_calls == ["compose"], compose_calls
+
+
+class TestTheRemedyNeverSaysDeleteALiveSubmodule:
+    """C1 — data/ is the PRIVATE pa-data submodule.
+
+    The step-7 pre-check printed one remedy for every non-worktree run:
+    "remove …/data entirely". Reached with an INITIALISED submodule that
+    merely lacked global-claude-md/local.md, that advice destroys
+    uncommitted work, and its parenthesised rationale ("git will not
+    clone into a non-empty directory") is not even true of that state.
+    """
+
+    @staticmethod
+    def _initialised_but_incomplete(pa_dir: Path) -> None:
+        """An initialised submodule holding real work but not local.md."""
+        data = pa_dir / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / ".git").write_text(
+            "gitdir: ../.git/modules/data\n", encoding="utf-8"
+        )
+        (data / "memories").mkdir()
+        (data / "memories" / "memories.jsonl").write_text(
+            '{"id": "synthetic", "content": "uncommitted work"}\n',
+            encoding="utf-8",
+        )
+
+    def test_an_initialised_submodule_is_never_told_to_delete_data(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The state the audit reproduced: initialised, missing one file."""
+        self._initialised_but_incomplete(sync_sandbox["pa_dir"])
+
+        result = _run_sync(
+            sync_sandbox, submodule_status=" 1234abcd data (heads/main)"
+        )
+
+        assert result.returncode == 1, result.stdout
+        combined = result.stdout + result.stderr
+        assert "remove" not in combined.lower(), combined
+        assert "Do NOT delete" in combined
+        assert "git -C" in combined and "status" in combined
+        # And the work it would have destroyed is still there.
+        assert (
+            sync_sandbox["pa_dir"] / "data" / "memories" / "memories.jsonl"
+        ).is_file()
+
+    def test_an_uninitialised_non_empty_data_still_gets_the_removal(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The destructive remedy is right for the state it was written for.
+
+        Survivor (i): deleting the remedy line left the suite green, so
+        both branches now pin their text.
+        """
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "stray.md").write_text("x\n", encoding="utf-8")
+
+        result = _run_sync(
+            sync_sandbox, submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 1, result.stdout
+        assert "Remedy: remove" in result.stdout, result.stdout
+        assert "will not clone into a non-empty directory" in result.stdout
+
+    def test_no_declared_submodule_gets_its_own_remedy(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """A checkout with no submodule at all is a third state."""
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        result = _run_sync(sync_sandbox, submodule_status="")
+
+        assert result.returncode == 1, result.stdout
+        assert "no data submodule is declared" in result.stdout
+        assert "remove" not in result.stdout.lower(), result.stdout
+
+    def test_the_composer_says_the_same_thing(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """The composer had the identical defect, keyed on emptiness."""
+        data = compose_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / ".git").write_text(
+            "gitdir: ../.git/modules/data\n", encoding="utf-8"
+        )
+        (data / "memories").mkdir()
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "Remove" not in result.stderr, result.stderr
+        assert "Do NOT delete" in result.stderr
+
+    def test_the_composer_still_says_remove_for_an_uninitialised_data(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Non-empty AND no checkout is the state removal is right for."""
+        data = compose_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "stray.md").write_text("x\n", encoding="utf-8")
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "Remove" in result.stderr
+        assert "no submodule checkout" in result.stderr
+
+    def test_the_composer_handles_an_empty_data_directory(
+        self, compose_sandbox: dict[str, Path]
+    ) -> None:
+        """Survivor (ii): dropping the `ls -A` conjunct must fail a test.
+
+        data/ present but EMPTY is the state an init fixes, so it must
+        get the init advice and not the removal one.
+        """
+        data = compose_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        assert list(data.iterdir()) == []
+
+        result = _run_compose(compose_sandbox)
+
+        assert result.returncode == 1
+        assert "submodule update --init" in result.stderr
+        assert "Remove" not in result.stderr, result.stderr
 
 
 class TestSyncSymlinksRefusesFromAWorktree:
