@@ -981,8 +981,20 @@ Open, each with its verdict so far:
   (a dangling one was invisible for ever); the sizeless warning once per
   run with a count. The round 4c-4 report's claim that its test pinned
   the filter is corrected. Merged with main (1286407), coordinator suite
-  4318 passed, 2 skipped, 19 deselected, exit 0; **PR #147**; re-audit
-  running.
+  4318 passed, 2 skipped, 19 deselected, exit 0; **PR #147**. Re-audit
+  verdict **do not merge** — C1: the new `^(ERROR|NOTICE)` anchor can
+  never match real rclone output, because rclone's default `--log-format`
+  prefixes every log-file line with a date and time; the branch's stubs
+  all write the un-prefixed form, so the tests certify a format rclone
+  never emits, and the deployed `logs/r2-push.log` holds 19,156 rclone
+  lines of which none match — including a REAL `--immutable` refusal on
+  `CATALOG.json` at 10:28 today that main classifies exit 3 and this
+  branch exit 2. The branch would trade the false positive for a false
+  negative on the one signal the classifier exists to raise. Round 4c-6
+  (same branch): match the level marker, not the line start, and make
+  every stub write the date-prefixed form; plus a dead `not is_link`, an
+  unpinned id count, a silent-by-default parameter, a label, and a
+  pre-existing `KeyError` on a sizeless manifest in the dry-run listing.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1044,7 +1056,12 @@ Operator actions pending, in order of consequence:
 6. `push-archives-to-r2.sh` now refuses to overwrite; `.tmp` objects already
    in R2 need a manual delete; run `normalise-archive-storage.py --dry-run`
    on the canonical mount before `--apply` (it now sweeps stale
-   temporaries).
+   temporaries). **Live now (found by the PR #147 re-audit reading
+   `logs/r2-push.log`):** the push has been refusing on `CATALOG.json`
+   ("immutable file modified", 2026-09-09 10:28) — the catalog is a file
+   that legitimately changes, so it needs to be exempted from
+   `--immutable` (or pushed separately without it) before the next push
+   can complete; until then every push exits 3.
 7. `PA_HERMETICITY_STRICT=1` is the contract for audit and clean-copy runs
    (see `commands/audit.md`); shared checkouts warn instead of failing on
    concurrent edits.
