@@ -1097,6 +1097,36 @@ class TestBatchSubmitIsNotRepeatable:
             self._expected_retrieve_command("batch_007", tmp_path / "out")
         )
 
+    def test_retrieve_command_quotes_a_directory_with_a_space(self, tmp_path):
+        """Pin the literal text, not a mirror of the implementation.
+
+        _expected_retrieve_command calls shlex.quote itself, so it would
+        follow the implementation wherever it went. This spells the quoted
+        form out.
+        """
+        provider_dir = tmp_path / "bake off runs" / "haiku"
+        expected = (
+            "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+            f"--haiku-apply batch_007 --out-dir '{tmp_path}/bake off runs'"
+        )
+        assert bom.haiku_retrieve_command("batch_007", provider_dir) == expected
+
+    def test_retrieve_command_quotes_a_hostile_batch_id(self):
+        """A batch id never needs quoting today; quote it anyway.
+
+        Anthropic's ids are msgbatch_ plus base62, so the quote is
+        defensive. It is kept rather than dropped because the value is
+        interpolated into a line an operator pastes into a shell, and the
+        cost of being wrong later is a command that does something other
+        than it reads. Pinned so the defence cannot be removed silently.
+        """
+        assert bom.haiku_retrieve_command(
+            "batch 007; rm -rf /", Path("/tmp/out/haiku")
+        ) == (
+            "venv/bin/python3 scripts/bake-off-metadata.py --provider haiku "
+            "--haiku-apply 'batch 007; rm -rf /' --out-dir /tmp/out"
+        )
+
     def test_the_printed_recovery_line_is_exact(
         self, tmp_path, capsys, submit_stub
     ):
