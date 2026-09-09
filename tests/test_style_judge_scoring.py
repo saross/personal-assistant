@@ -549,26 +549,63 @@ def _passages_for(tmp_path: Path, topics: list[str]) -> Path:
     return passages
 
 
-def test_a_built_experiment_scores_at_the_defaults(tmp_path, monkeypatch):
-    """Build, judge, score — with no path arguments anywhere.
+def _install_fake_spacy(monkeypatch) -> None:
+    """Put a scripted spaCy in ``sys.modules`` so ``builder.main`` can run.
 
-    This is the round trip the mismatch broke. The mutation this kills: any
-    future divergence between the two modules' key locations, which this
-    exercises rather than merely asserting.
+    The real model is not installed here and the corpus it would read is
+    private; the reference excerpt only needs a document with sentences in it.
     """
-    judge_dir, key_dir = _experiment_at(tmp_path, monkeypatch)
-    judge_dir.mkdir()
-    key_dir.mkdir(parents=True)
-    topics = ["T1", "T2"]
-    plan = builder.plan_pairs(4, contrasts=[("CXvC0", "CX")], topics=topics)
-    builder.emit_tasks(plan, _passages_for(tmp_path, topics), judge_dir,
-                       key_dir, "# Reference\n", seed=4)
+    import types
 
-    # The judges answer every pair, each choosing the guide's side.
+    from style_test_helpers import FakeNlp, FakeSent, FakeToken
+
+    sentence = FakeSent([FakeToken(word) for word in
+                         ("An", "invented", "reference", "sentence.")])
+    module = types.ModuleType("spacy")
+    module.load = lambda name: FakeNlp([sentence])
+    monkeypatch.setitem(sys.modules, "spacy", module)
+
+
+def test_a_built_experiment_scores_at_the_defaults(tmp_path, monkeypatch):
+    """Build, judge, score — with neither script told where the key goes.
+
+    Both sides run at their defaults: ``builder.main`` is given only its
+    inputs (passages and the extraction it draws reference excerpts from) and
+    ``scorer.main`` is given nothing at all. Handing the builder explicit
+    directories — as this test first did — meant the writer was told the
+    answer and only the reader's default was under test, so reverting the
+    BUILDER's argparse defaults to the pre-``private/`` locations left all 26
+    tests green while a real run wrote the key where the scorer does not look.
+    The mutation this kills is exactly that revert.
+    """
+    _experiment_at(tmp_path, monkeypatch)
+    _install_fake_spacy(monkeypatch)
+    topics = ["T1", "T2"]
+    monkeypatch.setattr(builder, "TOPICS", topics)
+    monkeypatch.setattr(builder, "CONTRASTS", [("CXvC0", "CX")])
+    monkeypatch.setattr(builder, "REFERENCE_PAPERS", ["AAAA1111"])
+    extracted = tmp_path / "extracted"
+    (extracted / "AAAA1111").mkdir(parents=True)
+    (extracted / "AAAA1111" / "body.md").write_text(
+        "Invented reference prose for the judge's target voice.\n",
+        encoding="utf-8")
+
+    assert builder.main([
+        "--passages-dir", str(_passages_for(tmp_path, topics)),
+        "--extracted-dir", str(extracted),
+        "--seed", "4",
+    ]) == 0
+
+    # The judges answer every pair, each choosing the guide's side. The key is
+    # read from wherever the builder actually put it.
+    key = json.loads(
+        (style_support.judge_key_dir() / "judge-mapping.json").read_text(
+            encoding="utf-8"))
     answers = [json.dumps({"pair_id": entry["pair_id"],
-                           "choice": entry["guide_side"]}) for entry in plan]
-    (judge_dir / "judgments.jsonl").write_text("\n".join(answers) + "\n",
-                                               encoding="utf-8")
+                           "choice": entry["guide_side"]})
+               for entry in key["pairs"]]
+    (style_support.judge_dir() / "judgments.jsonl").write_text(
+        "\n".join(answers) + "\n", encoding="utf-8")
 
     assert scorer.main([]) == 0
     assert (tmp_path / "judge-analysis.json").exists()
