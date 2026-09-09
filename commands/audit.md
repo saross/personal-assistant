@@ -175,35 +175,38 @@ paths, printed through the terminal reporter so it survives output capture —
 while the store half stays strict either way, with one allowance described
 below.
 
-**The append allowance, and what it leaves uncaught.** An append to the store
-is verified as an append — the bytes before it must still hash to what they
-hashed at session start, and for `memories.jsonl` and the vocabulary the
+**The append allowance, and what catches what it misses.** An append to the
+store is verified as an append — the bytes before it must still hash to what
+they hashed at session start, and for `memories.jsonl` and the vocabulary the
 appended text must be the shape that writer produces — and is then TOLERATED,
-**including under `PA_HERMETICITY_STRICT=1`**. Its path and byte count are
-printed under the `hermeticity` banner.
+including under `PA_HERMETICITY_STRICT=1`. Its path and byte count are printed
+under the `hermeticity` banner.
 
-That is a deliberate hole, and it is worth stating plainly: a test that forgets
-to patch its path and **appends a shape-correct record to the real
-`memories.jsonl` is not caught, in either mode**. The guard cannot tell such an
-append apart from the extraction hook's, because they are the same operation
-with the same result. What it does catch is everything else — a rewrite, a
-shrink, a deletion, appended text that is not a well-formed record or a bare
-tag, and a file created where none was. That last one has exceptions in
-advisory mode, all under `logs/` and all reported: a `*.lock` file, a log
-rotation (including a compressed one), a new `.log`/`.json`/`.jsonl`, and a
-new subdirectory. Under `PA_HERMETICITY_STRICT` none of those is excused.
+That allowance cannot distinguish a test's well-formed append from the
+extraction hook's: after the fact they are the same file, the same operation,
+and the same result. So a second, independent guard runs alongside it. A
+`sys.addaudithook` installed at session start watches this interpreter for a
+write-mode `open` of a canonical store path. The extraction hook runs in
+another PROCESS, so its appends are invisible to it, while a test that forgot
+to patch its path opens the file here and is named — with its node id — in
+advisory mode, and fails the run under STRICT.
 
-Two things narrow the exposure. The append is always REPORTED, so a run that
-appends unexpectedly says so and a reader who was not expecting a live append
-can act on it. And the shape check means each appended LINE must be a
-complete, valid record with `id`, `content` and `created_at`. Note what that
-does not say: a blank or whitespace-only line passes the check, and so does an
-unterminated tail that opens a JSON object (reported as an append in progress
-in advisory mode, fatal under STRICT). A test writing a malformed record, or a
-fragment that does not start one, fails. Closing the hole properly needs a way to distinguish the
-suite's writes from the machine's; nothing available inside pytest does that
-reliably, and a wrong answer here fails every run in a live checkout, which is
-worse than the hole.
+What that leaves: the audit hook under-detects, never over-detects. A write
+from a subprocess the test spawned, or from C code that bypasses Python's
+`open`, is missed. It cannot produce a false failure in a live checkout,
+which is what makes it safe to leave armed where other sessions are working.
+Measured cost on a full run: none detectable (179.5 s with it against a
+185.3 s baseline for the same tree, inside run-to-run noise).
+
+What the snapshot half still catches on its own: a rewrite, a shrink, a
+deletion, appended text that is not a well-formed record or a bare tag, and a
+file created where none was. That last one has exceptions in advisory mode,
+all under `logs/` and all reported: a `*.lock` file, a log rotation (including
+a compressed one), a new `.log`/`.json`/`.jsonl`, and a new subdirectory.
+Under `PA_HERMETICITY_STRICT` none of those is excused. Note what the shape
+check does not say: a blank or whitespace-only appended line passes it, and so
+does an unterminated tail that opens a JSON object (reported as an append in
+progress in advisory mode, fatal under STRICT).
 
 ### 2b. Lens B — test adequacy
 

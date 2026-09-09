@@ -40,14 +40,14 @@ defined; the one thing a reader needs up front is the environment switch:
     ``.log``/``.json``/``.jsonl`` under ``logs/``, and a new directory
     under ``logs/``.
 
-    What that leaves uncaught, stated plainly: a test that forgets to
-    patch its path and appends a SHAPE-CORRECT record to the real
-    memories.jsonl passes in both modes. The guard cannot tell that
-    append apart from the extraction hook's — they are the same
-    operation with the same result. It is reported, and the shape check
-    means the line must be a complete record with id, content and
-    created_at, but a test writing exactly that is not stopped. See
-    commands/audit.md for why closing it is not attempted here.
+    A well-formed append cannot be told from the extraction hook's by
+    the snapshot alone, so a SECOND guard runs beside it: an audit hook
+    (``arm_store_write_audit``) watches this interpreter for a
+    write-mode open of a store path. The hook writes from another
+    process and is invisible to it; a test that forgot to patch its
+    path is named in advisory mode and fails the run under STRICT. It
+    under-detects (a subprocess, or a C-level write, evades it) and
+    never over-detects, so it cannot fail a live checkout falsely.
 
 """
 
@@ -377,6 +377,120 @@ Last updated: 2024-02-08
 _QUEUE_LEAK: list[str] = []
 
 
+
+# ---------------------------------------------------------------------------
+# Closing the well-formed-append hole (round 4a-7, the M1 proposal)
+#
+# A test that forgets to patch its path and appends a SHAPE-CORRECT record to
+# the real memories.jsonl is indistinguishable, after the fact, from the
+# extraction hook doing its job: same file, same operation, same result. The
+# snapshot comparison therefore cannot catch it, and M1 stood documented
+# rather than fixed.
+#
+# It IS distinguishable while it happens: the extraction hook runs in a
+# separate process, so an audit hook in THIS interpreter sees only what this
+# process opens. ``sys.addaudithook`` gives us that, and its failure mode is
+# under-detection — a subprocess or a C-level write evades it — never a false
+# failure in a live checkout, which is the property that makes it safe to run
+# where other sessions are working.
+#
+# Measured cost: a full run with the hook installed took 179.5 s against a
+# 185.3 s baseline for the same tree without it — inside run-to-run noise on
+# a machine running other suites, so no detectable overhead.
+# ---------------------------------------------------------------------------
+
+#: ``(nodeid, path)`` for every in-process write-open of a watched file.
+_STORE_WRITE_OPENS: list[tuple[str, str]] = []
+
+#: Resolved canonical paths the audit hook watches. Empty when the store is
+#: not present (an archive export), which is also when the hook is not armed.
+_AUDITED_PATHS: set[str] = set()
+
+#: ``sys.addaudithook`` cannot be undone, so arm at most once per process.
+_AUDIT_ARMED: list[bool] = [False]
+
+#: Open modes that can modify a file. ``r`` alone is not one of them.
+_WRITING_MODE_CHARS = frozenset("wax+")
+
+
+def _audit_path(raw: object) -> str | None:
+    """The path an audit event carries, as a string, or ``None``.
+
+    ``Path.open`` hands the event a ``PosixPath``, not a ``str``, so a
+    naive ``isinstance(raw, str)`` test misses the commonest route
+    altogether — which is how the first prototype reported nothing.
+    """
+    try:
+        path = os.fspath(raw)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+    if isinstance(path, bytes):
+        return path.decode("utf-8", "replace")
+    return path
+
+
+def _audit_is_writing(mode: object, flags: object) -> bool:
+    """Does this ``open`` event modify the file?
+
+    ``open(path, "a")`` reports its mode as a string. ``os.open`` raises the
+    same event with ``mode=None`` and the real flags, so the flags have to
+    be consulted too — the first prototype checked only the string and
+    missed every ``os.open``.
+    """
+    if isinstance(mode, str):
+        return bool(_WRITING_MODE_CHARS & set(mode))
+    if isinstance(flags, int):
+        writing = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT
+        writing |= getattr(os, "O_TRUNC", 0)
+        return bool(flags & writing)
+    return False
+
+
+def arm_store_write_audit() -> bool:
+    """Watch this process for a write-open of a canonical store file.
+
+    Returns whether the hook is armed. Not armed when the store is absent
+    (nothing to watch) or when a previous call already armed it — audit
+    hooks are permanent, so installing one per session fixture invocation
+    would stack them.
+    """
+    if _AUDIT_ARMED[0]:
+        return True
+    _AUDITED_PATHS.clear()
+    for candidate in _CANONICAL_FILES:
+        try:
+            if candidate.exists():
+                _AUDITED_PATHS.add(str(candidate.resolve()))
+        except OSError:  # pragma: no cover — unreadable path
+            continue
+    if not _AUDITED_PATHS:
+        return False
+
+    def _hook(event: str, args: tuple) -> None:
+        # Cheapest possible reject first: this runs for every audit event in
+        # the process, and the suite opens tens of thousands of files.
+        if event != "open":
+            return
+        path = _audit_path(args[0])
+        if path is None or path not in _AUDITED_PATHS:
+            return
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else None
+        if not _audit_is_writing(mode, flags):
+            return
+        _STORE_WRITE_OPENS.append((str(_ACTIVE_TEST["nodeid"]), path))
+
+    sys.addaudithook(_hook)
+    _AUDIT_ARMED[0] = True
+    return True
+
+
+def store_write_opens() -> list[str]:
+    """One line per in-process write-open, naming the test that did it."""
+    return [f"{nodeid} opened {path} for writing"
+            for nodeid, path in _STORE_WRITE_OPENS]
+
+
 def _basetemp_roots(config) -> list[str]:
     """Every directory pytest hands tests for temporary files, resolved.
 
@@ -509,6 +623,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "  In a shared checkout this is usually a CONCURRENT SESSION, "
             f"not the suite. Set {STRICT_ENV_VAR}=1 where nothing else is "
             "writing to make it fatal.", yellow=True,
+        )
+    for line in report.get("store_writes", []):
+        terminalreporter.write_line(
+            f"WARNING: a test opened the real canonical store for writing: "
+            f"{line}", red=True,
+        )
+    if report.get("store_writes"):
+        terminalreporter.write_line(
+            "  The extraction hook writes from another process, so this was "
+            f"this one. Set {STRICT_ENV_VAR}=1 to make it fatal.", red=True,
         )
     for line in report.get("appends", []):
         terminalreporter.write_line(
@@ -1571,6 +1695,7 @@ def no_real_cache_writes():
     )
     before = _pipeline_cache_snapshot()
     store_before = _canonical_store_snapshot()
+    arm_store_write_audit()
     yield
     after = _pipeline_cache_snapshot()
     # No digests on the second snapshot: the only prefix that matters is the
@@ -1630,9 +1755,21 @@ def no_real_cache_writes():
     # landing in the same run cannot mask a store violation underneath it
     # (round 4a-5, finding 6). The notes above are queued either way, so the
     # terminal summary still explains a failing run.
+    opens = store_write_opens()
+    if opens:
+        _DEFERRED_REPORT["store_writes"] = list(opens)
+
     problems: list[str] = []
     if store_violations:
         problems.append(_store_failure_text(store_violations))
+    if opens and hermeticity_is_strict():
+        detail = "\n".join(f"    {line}" for line in opens)
+        problems.append(
+            "a test opened the REAL canonical store for writing "
+            f"({STRICT_ENV_VAR}=1, so this is fatal). The extraction hook "
+            "runs in another process, so this was THIS process — a test "
+            f"that did not patch its path:\n{detail}"
+        )
     if source_changes and hermeticity_is_strict():
         detail = "\n".join(f"    {path}" for path in source_changes)
         problems.append(

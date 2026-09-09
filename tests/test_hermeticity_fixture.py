@@ -3168,3 +3168,168 @@ def test_the_net_drops_only_the_leaked_entry(tmp_path):
     assert "not-mine.md" in combined
     assert "left-behind.md" in combined, (
         "the genuine source change was thrown away with the leak")
+
+
+# ===========================================================================
+# The M1 hole, closed by an in-process audit hook (round 4a-7)
+#
+# A well-formed append to the real store is indistinguishable AFTER THE FACT
+# from the extraction hook's. It is distinguishable WHILE IT HAPPENS: the
+# hook runs in another process, so an audit hook in this interpreter sees
+# only what this process opens.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("mode,flags,writing", [
+    ("r", None, False),
+    ("rb", None, False),
+    ("a", None, True),
+    ("w", None, True),
+    ("r+", None, True),
+    ("xb", None, True),
+    (None, os.O_RDONLY, False),
+    (None, os.O_WRONLY | os.O_APPEND, True),
+    (None, os.O_RDWR, True),
+    (None, os.O_CREAT, True),
+    (None, None, False),
+])
+def test_which_open_events_count_as_writing(mode, flags, writing):
+    """``os.open`` reports mode=None, so the flags must be consulted too.
+
+    The first prototype checked only the mode string and missed every
+    ``os.open``; a read must never count. Kills a mutation that drops
+    either half of the test.
+    """
+    assert conftest._audit_is_writing(mode, flags) is writing
+
+
+def test_the_audit_path_helper_accepts_what_the_event_carries(tmp_path):
+    """``Path.open`` hands the event a PosixPath, not a str.
+
+    That is the commonest route into the store, and an ``isinstance(raw,
+    str)`` test misses it — which is why the first prototype reported
+    nothing. Kills a mutation that drops ``os.fspath``.
+    """
+    target = tmp_path / "memories.jsonl"
+    assert conftest._audit_path(target) == str(target)
+    assert conftest._audit_path(str(target)) == str(target)
+    assert conftest._audit_path(str(target).encode()) == str(target)
+    assert conftest._audit_path(7) is None      # an fd, not a path
+    assert conftest._audit_path(None) is None
+
+
+def test_arming_is_a_no_op_without_a_store(tmp_path, monkeypatch):
+    """No store, nothing to watch — and audit hooks cannot be removed.
+
+    An archive export has no store, so arming there would install a
+    permanent hook that could never match.
+    """
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (tmp_path / "absent" / "memories.jsonl",))
+    assert conftest.arm_store_write_audit() is False
+
+
+def test_arming_twice_installs_one_hook(tmp_path, monkeypatch):
+    """``sys.addaudithook`` is permanent, so a second arm must be a no-op.
+
+    Kills a mutation that drops the ``_AUDIT_ARMED`` guard: the session
+    fixture would stack a hook per invocation.
+    """
+    installed = []
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(sys, "addaudithook",
+                        lambda hook: installed.append(hook))
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (corpus,))
+
+    assert conftest.arm_store_write_audit() is True
+    assert conftest.arm_store_write_audit() is True
+    assert len(installed) == 1
+
+
+def test_store_write_opens_names_the_test(monkeypatch):
+    """The report must name the test, not just the path."""
+    monkeypatch.setattr(
+        conftest, "_STORE_WRITE_OPENS",
+        [("tests/test_x.py::test_y", "/store/memories.jsonl")])
+    assert conftest.store_write_opens() == [
+        "tests/test_x.py::test_y opened /store/memories.jsonl for writing"]
+
+
+#: A nested tree whose store is populated AND whose test appends a
+#: well-formed record to it — the M1 hole, reproduced end to end.
+_NESTED_M1_APPEND = "\n".join([
+    "import json",
+    "from pathlib import Path",
+    "",
+    "import conftest",
+    "",
+    "",
+    "def test_forgets_to_patch_its_path():",
+    "    corpus = conftest._CANONICAL_FILES[0]",
+    "    with corpus.open('a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-09-ffffeeeedddd',",
+    "            'content': 'appended by a careless test',",
+    "            'created_at': '2031-09-09T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+
+def test_an_in_process_append_is_reported_in_advisory_mode(tmp_path):
+    """The hole itself: a well-formed append the snapshot cannot catch.
+
+    Before the audit hook this run was silent and green — the append was
+    verified as an append and tolerated, exactly as documented. Now the
+    write is named with the test that made it, while the run still passes
+    (advisory). Kills the mutation that drops ``arm_store_write_audit``.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND)
+
+    combined = result.stdout + result.stderr
+    assert "opened the real canonical store for writing" in combined, (
+        combined[-2500:])
+    assert "test_forgets_to_patch_its_path" in combined
+    assert "memories.jsonl" in combined
+    assert result.returncode == 0, "advisory mode reports, it does not fail"
+
+
+def test_an_in_process_append_is_fatal_under_strict(tmp_path):
+    """And in a clean copy it fails the run.
+
+    Kills the mutation that reports without ever failing.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_forgets_to_patch_its_path" in combined
+
+
+def test_a_read_of_the_store_is_not_reported(tmp_path):
+    """Reading the corpus is what most tests legitimately do.
+
+    Kills a mutation that reports every open regardless of mode — which
+    would fail on the guard's own snapshot reads.
+    """
+    body = "\n".join([
+        "import conftest",
+        "",
+        "",
+        "def test_reads_the_store():",
+        "    corpus = conftest._CANONICAL_FILES[0]",
+        "    assert corpus.read_text(encoding='utf-8')",
+        "",
+    ])
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, body,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert "opened the real canonical store for writing" not in combined
