@@ -71,6 +71,9 @@ Usage
     python phase5_evaluator.py --validate \
         --report data/style-corpus/phase5-validation-report.md
 
+    # Show what a run WOULD write, without writing a single byte
+    python phase5_evaluator.py --text gen.md --report out.md --dry-run
+
 Exit code is non-zero when the 8-metric gate FAILS (for CI / pre-publish
 gating), mirroring `phase3_guide_verifier.py`. In `--validate` mode the exit
 code is non-zero when a sanity-check expectation is violated.
@@ -101,6 +104,7 @@ from sklearn.covariance import LedoitWolf
 # main() behind `if __name__ == "__main__"`.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase1_pipeline as p1  # noqa: E402  (after sys.path manipulation)
+import style_support  # noqa: E402  (flat sibling; standard library only)
 
 # ---------------------------------------------------------------------------
 # Default paths
@@ -153,6 +157,13 @@ SHORT_INPUT_WORDS = 200
 # Minimum papers each side of a gap for the advisory cluster split (matches
 # phase3_promotion.BIMODALITY_MIN_PER_SIDE so the clusters line up).
 ADVISORY_MIN_PER_SIDE = 3
+
+# Smallest corpus for which the validation report's held-out arm is meaningful.
+# That arm scores one paper against an n-1 fit, whose own leave-one-out envelope
+# trains on n-2 papers, and a sample standard deviation needs two of them; below
+# four papers the reduced fit is degenerate, so the arm is skipped rather than
+# reported misleadingly.
+HELD_OUT_MIN_PAPERS = 4
 
 # ---------------------------------------------------------------------------
 # Booster inventory (8-metric gate, check 6)
@@ -391,7 +402,16 @@ def cluster_split(values: list[float],
 
 def advisory_report(phase1: dict, fs: FeatureSpace, record: dict) -> list[dict]:
     """For each excluded bimodal metric, report the corpus clusters and where
-    the input value falls."""
+    the input value falls.
+
+    An advisory metric can be missing, or non-numeric, across *every* paper —
+    a phase1 results file written before the metric existed, say — which leaves
+    ``corpus_vals`` empty. ``min()``/``max()`` would then raise ``ValueError``
+    and abort an otherwise valid evaluation over what is only an advisory
+    block (audit finding L5), so the empty case is reported explicitly
+    instead: ``corpus_min``/``corpus_max`` come back ``None`` alongside a
+    ``note`` saying why.
+    """
     out: list[dict] = []
     for adv in fs.advisory:
         path = adv["path"]
@@ -405,12 +425,23 @@ def advisory_report(phase1: dict, fs: FeatureSpace, record: dict) -> list[dict]:
         assignment = None
         if split.get("split") and input_val is not None:
             assignment = "low" if input_val <= split["boundary"] else "high"
+        # Documented empty-input fallback (L5): report the absence rather than
+        # raising, and rather than inventing a range out of nothing.
+        if corpus_vals:
+            corpus_min: float | None = round(min(corpus_vals), 4)
+            corpus_max: float | None = round(max(corpus_vals), 4)
+            note = ""
+        else:
+            corpus_min = corpus_max = None
+            note = ("no corpus paper carries a numeric value for this metric; "
+                    "corpus range unavailable")
         out.append({
             "metric": adv["metric"],
             "label": adv["label"],
             "input_value": round(input_val, 4) if input_val is not None else None,
-            "corpus_min": round(min(corpus_vals), 4),
-            "corpus_max": round(max(corpus_vals), 4),
+            "corpus_min": corpus_min,
+            "corpus_max": corpus_max,
+            "note": note,
             "split": split,
             "input_cluster": assignment,
         })
@@ -633,6 +664,9 @@ class Evaluation:
     feature_deltas: list[dict]
     advisory: list[dict]
     gate: list[GateCheck]
+    #: Active features phase 1 could not measure on this input, imputed with
+    #: the corpus mean (z = 0). Empty for any input long enough to measure.
+    imputed_features: list[str] = field(default_factory=list)
     record: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -665,13 +699,22 @@ def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
     record = p1.process_paper(source_label, text, nlp)
     n_words = record["n_words"]
 
-    # Input feature vector in the active space.
-    x_input = np.array(
-        [float(dotted(record, path)) for path in fs.active_paths], dtype=float
-    )
-
-    # Fit the full-corpus model and score the input.
+    # Fit the full-corpus model first: its per-feature MEAN is the neutral
+    # value an unmeasurable feature is imputed with below.
     mean, std = standardiser(X)
+
+    # Input feature vector in the active space. Phase 1 reports None for a
+    # metric it could not measure on this input — mattr_100 below its 100-word
+    # window, which is an ACTIVE feature — and `float(None)` raised TypeError
+    # deep inside numpy before the short-input warning could explain it. The
+    # corpus matrix has guarded this since it was written; the input vector
+    # now does too, and names every feature it had to impute.
+    x_values, imputed_features = style_support.impute_missing_features(
+        [dotted(record, path) for path in fs.active_paths],
+        fs.active_labels,
+        [float(m) for m in mean],
+    )
+    x_input = np.array(x_values, dtype=float)
     lw = fit_ledoit_wolf(zscore(X, mean, std))
     xz = zscore(x_input, mean, std)
     squared = float(lw.mahalanobis(xz.reshape(1, -1))[0])
@@ -712,6 +755,7 @@ def evaluate_text(text: str, source_label: str, phase1: dict, phase3: dict,
         feature_deltas=deltas,
         advisory=advisory,
         gate=gate,
+        imputed_features=imputed_features,
         record=record,
     )
 
@@ -730,6 +774,15 @@ def render_markdown(ev: Evaluation) -> str:
         L.append(
             f"> ⚠ Short input (< {SHORT_INPUT_WORDS} words): per-1k rates and the "
             "Mahalanobis estimate are noisy. Treat both verdicts as indicative only."
+        )
+    if ev.imputed_features:
+        # Say it in the report, not just the JSON: a distance computed with an
+        # imputed feature rests on one fewer piece of evidence than it looks.
+        L.append("")
+        L.append(
+            "> ⚠ Not measurable on this input, and imputed with the corpus "
+            f"mean (no contribution to the distance): "
+            f"{', '.join(ev.imputed_features)}."
         )
     L.append("")
 
@@ -837,6 +890,9 @@ def evaluation_to_dict(ev: Evaluation) -> dict:
         "source": ev.source_label,
         "n_words": ev.n_words,
         "short_input": ev.short_input,
+        # Named, not silent: a distance computed with an imputed feature is
+        # not the same evidence as one computed with all of them measured.
+        "imputed_features": ev.imputed_features,
         "mahalanobis": {
             "distance": ev.distance,
             "squared": ev.squared,
@@ -940,13 +996,67 @@ def gate_calibration(phase1: dict, phase3: dict, nlp, extracted_dir: Path,
     }
 
 
+# `eq=False`: the dataclass would otherwise generate an `__eq__` that compares
+# `fit_X` element-wise, and a numpy array in a boolean context raises.
+@dataclass(eq=False)
+class SanitySample:
+    """One row of the validation report's sanity table, with its own fit.
+
+    A sample only tests the metric if the fit it is measured against does not
+    already contain it. The off-register fixtures are synthetic and are not
+    corpus rows, so they are scored against the full n-paper fit. The held-out
+    real paper *is* a corpus row, so it carries a reduced fit with its own row
+    dropped, and a leave-one-out (LOO) envelope recomputed from that reduced
+    matrix. This is audit finding ST11: the held-out arm used to score the
+    paper against a fit built from every corpus paper *including itself*, so
+    that arm of the sanity check could not fail.
+    """
+
+    label: str
+    text: str
+    is_corpus: bool
+    fit_X: np.ndarray        # corpus matrix this sample is scored against
+    fit_loo: list[float]     # LOO envelope recomputed from `fit_X`
+    fit_note: str            # rendered in the report's "Fit" column
+    #: The phase 1 results the advisory cluster ranges are read from. The
+    #: held-out sample gets a copy with its own paper dropped: those ranges
+    #: are corpus evidence too, and a paper compared against a band it helped
+    #: define is being compared with itself (re-audit item 11).
+    fit_phase1: dict = field(default_factory=dict)
+    #: False when the 8-metric gate's targets still contain this sample. The
+    #: targets are corpus AGGREGATES, not per-paper rows, so dropping a row
+    #: cannot remove a paper from them: for the held-out sample the gate is
+    #: rendered as not-independent rather than as a pass or a fail it has not
+    #: earned.
+    gate_is_independent: bool = True
+
+
+def phase1_without(phase1: dict, key: str) -> dict:
+    """Return a copy of ``phase1`` with paper ``key`` removed from per_paper.
+
+    Used for the held-out sanity sample so the advisory cluster ranges it is
+    compared against are corpus evidence that excludes it (re-audit item 11).
+    The ``aggregate`` block is carried over unchanged and deliberately: it is
+    a set of corpus-wide recomputations, not a sum of rows, so it cannot be
+    corrected by dropping one — which is why the gate is reported as
+    not-independent for that sample rather than silently trusted.
+    """
+    reduced = dict(phase1)
+    reduced["per_paper"] = [p for p in phase1.get("per_paper", [])
+                            if p.get("key") != key]
+    return reduced
+
+
 def build_validation_report(phase1: dict, phase3: dict, nlp,
                             extracted_dir: Path) -> tuple[str, bool]:
     """Produce the LOO distance table + sanity-check fixtures.
 
-    Returns (markdown, sanity_ok). `sanity_ok` is False if any off-register
-    fixture scores at or below the corpus LOO median (the metric would then be
-    failing to separate foreign text from corpus text).
+    Returns (markdown, sanity_ok). Every sample's verdict — the text rendered
+    in the table and the sample's contribution to `sanity_ok` alike — comes
+    from `style_support.sanity_verdict`, so the footer can no longer report
+    PASS over a table row saying the separation failed (audit finding ST12).
+    The held-out corpus paper is scored against an n-1 fit that excludes it
+    (audit finding ST11).
     """
     fs = resolve_feature_space(phase3)
     X, keys = build_corpus_matrix(phase1, fs.active_paths)
@@ -991,41 +1101,96 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
     L.append("")
     L.append(
         "Off-register synthetic prose (NOT corpus extracts) plus one held-out "
-        "real corpus paper. Expectation: foreign fixtures score farther than "
-        "the corpus LOO max; the real paper scores within the LOO range."
+        "real corpus paper. Expectation: each foreign fixture scores farther "
+        "than the LOO max of the fit it is measured against; the real paper "
+        "scores within its own fit's LOO range."
     )
     L.append("")
-    L.append("| Sample | n words | Distance | vs LOO max | Gate |")
-    L.append("|---|---:|---:|---|:--:|")
+    L.append(
+        "The fixtures are synthetic and are not corpus rows, so they are "
+        "scored against the **full** fit. The held-out real paper *is* a "
+        "corpus row, so it is scored against an **n−1 fit that excludes it** "
+        "— centroid, covariance, and the comparison LOO envelope are all "
+        "recomputed without its row. Scoring it against the full fit (this "
+        "report's behaviour before the 2026-09 audit) made that arm of the "
+        "check unable to fail."
+    )
+    L.append("")
 
     sanity_ok = True
-    loo_max = loo_summary["max"]
-    loo_median = loo_summary["median"]
 
-    # Pick a real corpus paper (the LOO-median paper) as an in-distribution check
+    # The in-distribution check: the LOO-median corpus paper, re-measured
+    # against a fit that does not contain it (ST11).
     median_idx = sorted(range(len(loo)), key=lambda i: loo[i])[len(loo) // 2]
     median_key = keys[median_idx]
-    body = (extracted_dir / median_key / "body.md")
-    samples: list[tuple[str, str]] = list(SANITY_FIXTURES)
-    if body.exists():
-        samples.append((f"corpus:{median_key} (held-out real)",
-                        body.read_text(encoding="utf-8", errors="replace")))
+    body = extracted_dir / median_key / "body.md"
 
-    for label, text in samples:
-        ev = evaluate_text(text, label, phase1, phase3, nlp,
-                           loo=loo, X=X, fs=fs)
-        is_corpus = label.startswith("corpus:")
-        if is_corpus:
-            verdict = "within" if ev.distance <= loo_max else "ABOVE (unexpected)"
-            if ev.distance > loo_max:
-                sanity_ok = False
-        else:
-            verdict = "farther ✓" if ev.distance > loo_max else "NOT farther ✗"
-            if ev.distance <= loo_median:
-                sanity_ok = False
-        gate_tag = "✓" if ev.gate_pass else "✗"
+    samples: list[SanitySample] = [
+        SanitySample(label=label, text=text, is_corpus=False,
+                     fit_X=X, fit_loo=loo, fit_note=f"full (n={len(X)})",
+                     fit_phase1=phase1)
+        for label, text in SANITY_FIXTURES
+    ]
+    held_out_key: str | None = None
+    if body.exists() and len(X) >= HELD_OUT_MIN_PAPERS:
+        # Drop the held-out paper's row, then recompute the LOO envelope from
+        # the reduced matrix so the comparison band excludes it as well.
+        reduced_X = np.delete(X, median_idx, axis=0)
+        reduced_loo = leave_one_out_distances(reduced_X)
+        held_out_key = median_key
+        samples.append(SanitySample(
+            label=f"corpus:{median_key} (held-out real)",
+            text=body.read_text(encoding="utf-8", errors="replace"),
+            is_corpus=True,
+            fit_X=reduced_X,
+            fit_loo=reduced_loo,
+            fit_note=f"n−1 (n={len(reduced_X)}, `{median_key}` excluded)",
+            fit_phase1=phase1_without(phase1, median_key),
+            # The gate's targets are corpus aggregates; no row can be dropped
+            # from them, so this row's gate is not an independent check.
+            gate_is_independent=False,
+        ))
+
+    if held_out_key is not None:
+        L.append(f"**Held out for the n−1 fit:** `{held_out_key}` — the "
+                 f"LOO-median paper of the full {len(X)}-paper fit.")
+    elif not body.exists():
+        # The held-out arm is the only part of this report that tests whether
+        # the metric RECOGNISES corpus prose; without it the run proves half
+        # of what it claims, so it fails rather than passing quietly.
+        sanity_ok = False
+        L.append(f"**No held-out arm — FAIL:** `{median_key}/body.md` is not "
+                 f"present under `{extracted_dir}`, so nothing checked that "
+                 "the metric recognises genuine corpus prose. Point "
+                 "`--extracted-dir` at the extraction, or re-run "
+                 "`extract_corpus.py`.")
+    else:
+        L.append(f"**No held-out arm:** an n−1 fit needs at least "
+                 f"{HELD_OUT_MIN_PAPERS} papers and this corpus has {len(X)}.")
+    L.append("")
+    L.append("| Sample | n words | Distance | Fit | vs fit LOO max | Gate |")
+    L.append("|---|---:|---:|---|---|:--:|")
+
+    for sample in samples:
+        ev = evaluate_text(sample.text, sample.label,
+                           sample.fit_phase1 or phase1, phase3, nlp,
+                           loo=sample.fit_loo, X=sample.fit_X, fs=fs)
+        fit_summary = distribution_summary(sample.fit_loo)
+        # One rule drives the rendered verdict and the overall flag alike
+        # (ST12). It lives in style_support, where it is testable without
+        # numpy, so it must not be re-implemented here.
+        verdict, sample_ok = style_support.sanity_verdict(
+            ev.distance, fit_summary["max"], fit_summary["median"],
+            sample.is_corpus,
+        )
+        sanity_ok = sanity_ok and sample_ok
+        # "—" rather than a tick the sample did not earn: see
+        # SanitySample.gate_is_independent.
+        gate_tag = ("✓" if ev.gate_pass else "✗") \
+            if sample.gate_is_independent else "—"
         L.append(
-            f"| {label} | {ev.n_words:,} | {ev.distance} | {verdict} | {gate_tag} |"
+            f"| {sample.label} | {ev.n_words:,} | {ev.distance} | "
+            f"{sample.fit_note} | {verdict} | {gate_tag} |"
         )
 
     L.append("")
@@ -1061,10 +1226,11 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
     verdict = "✓ PASS" if sanity_ok else "✗ FAIL"
     L.append(
         f"**Sanity verdict:** {verdict} — "
-        + ("off-register fixtures rank farther than the corpus and the held-out "
-           "real paper stays within range."
+        + ("every off-register fixture ranks farther than its fit's LOO max, "
+           "and the held-out real paper stays within the n−1 fit's LOO range."
            if sanity_ok else
-           "a fixture did not separate as expected; inspect the feature space.")
+           "at least one sample did not separate as expected; the sample table "
+           "above names it. Inspect the feature space.")
     )
     L.append("")
     return "\n".join(L), sanity_ok
@@ -1073,6 +1239,57 @@ def build_validation_report(phase1: dict, phase3: dict, nlp,
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def write_output(path: Path | None, text: str, *, payload: dict | None = None,
+                 dry_run: bool = False) -> bool:
+    """Write one output file atomically, honouring ``--dry-run``.
+
+    ``text`` is the rendered form that is also printed to stdout. When
+    ``payload`` is given the file is written from it via
+    :func:`style_support.atomic_write_json` (byte-identical to ``text`` plus a
+    trailing newline), so a JSON report carries its ``provenance`` block and
+    still lands atomically. Both helpers write to a temporary file in the
+    destination directory and rename it into place, so an interrupted run
+    leaves the previous report intact rather than a truncated one.
+
+    A dry run writes nothing at all — not the file, not its parent directory —
+    and says so on stdout, so an operator can point the script at a production
+    path and see what it would do without touching it. Returns whether bytes
+    were written.
+    """
+    if path is None:
+        if dry_run:
+            print("[dry run] no --report path given; nothing would be written.")
+        return False
+    if dry_run:
+        n_bytes = len(text.encode("utf-8"))
+        print(f"[dry run] would write {n_bytes:,} bytes to {path}; "
+              "nothing written.")
+        return False
+    if payload is not None:
+        wrote = style_support.atomic_write_json(path, payload)
+    else:
+        wrote = style_support.atomic_write_text(path, text)
+    print(f"Wrote {path}", file=sys.stderr)
+    return wrote
+
+
+def render_provenance_section(provenance: dict) -> str:
+    """Render a provenance block as a Markdown section for a report footer."""
+    lines = ["", "## Provenance", ""]
+    dirty = provenance.get("git_dirty")
+    lines.append(f"- Script: `{provenance['script']}`, commit "
+                 f"`{provenance['git_commit']}`"
+                 + (" (working tree DIRTY: the commit alone does not identify "
+                    "this run)" if dirty else ""))
+    if provenance.get("git_note"):
+        lines.append(f"- Commit not recorded: {provenance['git_note']}")
+    if provenance.get("spacy_model"):
+        lines.append(f"- spaCy model: `{provenance['spacy_model']}`")
+    for item in provenance.get("inputs", []):
+        lines.append(f"- Input `{item['path']}` sha256 `{item['sha256']}`")
+    return "\n".join(lines) + "\n"
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -1098,6 +1315,9 @@ def main() -> int:
                          "band is bimodal and retained for backward comparison "
                          "only")
     ap.add_argument("--spacy-model", default="en_core_web_sm")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="compute everything but write no output file; report "
+                         "on stdout what would have been written")
     args = ap.parse_args()
 
     if not args.phase1.exists():
@@ -1109,6 +1329,18 @@ def main() -> int:
 
     phase1 = load_json(args.phase1)
     phase3 = load_json(args.phase3)
+    # The input below is measured with today's phase 1 code; the corpus it is
+    # scored against must have been measured the same way, or the distance is
+    # between two different measurements (re-audit item 4). Phase 3 is checked
+    # with it: the feature space itself — which metrics are bimodal, and so
+    # which are excluded from the Mahalanobis distance — is read from phase 3,
+    # and a promotion file computed from superseded measurements answers that
+    # question about different metrics than the ones being scored.
+    for payload, source in ((phase1, args.phase1), (phase3, args.phase3)):
+        stale = style_support.metric_schema_error(payload, source)
+        if stale:
+            print(stale, file=sys.stderr)
+            return 2
 
     import spacy
     nlp = spacy.load(args.spacy_model)
@@ -1123,10 +1355,16 @@ def main() -> int:
         report, sanity_ok = build_validation_report(
             phase1, phase3, nlp, args.extracted_dir
         )
-        if args.report:
-            args.report.parent.mkdir(parents=True, exist_ok=True)
-            args.report.write_text(report, encoding="utf-8")
-            print(f"Wrote {args.report}", file=sys.stderr)
+        # The validation artefact carries provenance too (re-audit item 12):
+        # it is the report that says whether the instrument works, so a
+        # reader needs to know which code and which corpus produced it.
+        report += render_provenance_section(
+            style_support.provenance_block(
+                Path(__file__).name, [args.phase1, args.phase3],
+                spacy_model=args.spacy_model,
+            )
+        )
+        write_output(args.report, report, dry_run=args.dry_run)
         print(report)
         return 0 if sanity_ok else 1
 
@@ -1148,15 +1386,22 @@ def main() -> int:
     ev = evaluate_text(text, source_label, phase1, phase3, nlp,
                        corpus_em_dash=args.corpus_em_dash, fs=fs)
 
+    payload: dict | None = None
     if args.format == "json":
-        out = json.dumps(evaluation_to_dict(ev), indent=2, ensure_ascii=False)
+        payload = evaluation_to_dict(ev)
+        # Provenance names the code and the exact input bytes behind these
+        # numbers. Deliberately timestamp-free, so that a byte-identical
+        # re-run is itself the determinism check (see style_support).
+        payload["provenance"] = style_support.provenance_block(
+            "phase5_evaluator.py",
+            [p for p in (args.phase1, args.phase3, args.text) if p is not None],
+            spacy_model=args.spacy_model,
+        )
+        out = json.dumps(payload, indent=2, ensure_ascii=False)
     else:
         out = render_markdown(ev)
 
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(out, encoding="utf-8")
-        print(f"Wrote {args.report}", file=sys.stderr)
+    write_output(args.report, out, payload=payload, dry_run=args.dry_run)
     print(out)
 
     return 0 if ev.gate_pass else 1

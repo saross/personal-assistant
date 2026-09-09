@@ -140,7 +140,20 @@ def _load(filename: str):
 
 
 def _phase1_fixture(path: Path) -> Path:
-    """Write a minimal, invented Phase 1 results JSON."""
+    """Write a minimal, invented Phase 1 results JSON.
+
+    The payload carries the metric-definition stamp every phase 1 consumer
+    now requires (audit round 4g-2, item 4): four metrics changed meaning
+    under names that stayed the same, so a results file measured with the old
+    definitions looks identical to one measured with the new, and a consumer
+    comparing the two silently produces a number with no meaning.
+    ``phase3_promotion`` therefore refuses an unstamped file with exit 2 —
+    which is what these override tests were tripping over.
+
+    The stamp comes from the same helper phase 1 itself writes, rather than a
+    literal version number, so a future bump reaches this fixture without
+    anybody having to remember it.
+    """
     per_paper = [
         {
             "key": f"INVENTED{index}",
@@ -158,6 +171,7 @@ def _phase1_fixture(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({
+            "metric_schema": _load("style_support.py").metric_schema_stamp(),
             "per_paper": per_paper,
             "aggregate": {
                 "regression": {
