@@ -746,12 +746,13 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (twenty-two PRs): #114, #115, #116, #117, #118
+Merged from this audit (twenty-three PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #126, #131, #134 (bake-off tooling); #127, #137 (concurrency-
-tolerant guard, midnight flake, hermeticity follow-ups); #129, #140
+tolerant guard, midnight flake, hermeticity follow-ups); #143
+(hermeticity round 4a-6); #129, #140
 (memory readers and anchors); #132, #135, #139 (daily-sync lows); #136, #141
 (archive follow-ups); #128 (style-analyser scripts, three re-audits);
 #142 (bake-off round 4e-5).
@@ -819,8 +820,24 @@ Open, each with its verdict so far:
   only; entries labelled by kind; `_under_logs` load-bearing; all
   survivors killed. Its clean-copy run with a populated synthetic store:
   3951 passed, exit 0, no banner, store byte-identical. Merged with main
-  (7741d84), coordinator suite 3952 passed, exit 0; **PR #143**; re-audit
-  running.
+  (7741d84), coordinator suite 3952 passed, exit 0; **PR #143, merged
+  85f0593** 2026-09-09 13:0x: the re-audit found the M1 documentation
+  accurate and all four real-state runs (strict with a populated store,
+  advisory with a live append, strict with a truncated append, worktree
+  with the real HOME) behaving as specified. Its follow-ups are round
+  4a-7 (`claude/audit-round4a-7`): the tolerated-kind label's call site
+  is untested (a literal survives the full suite); `isolated_report` is
+  function-scoped, so a session-scoped fixture still pollutes the queue,
+  and the "session-level net" is vacuous (the autouse isolation empties
+  the queue it inspects); M2 narrowed advisory tolerance to the one
+  mid-write state a single `os.write` almost never produces (a truncated
+  JSON tail is now a violation even in advisory mode); three false
+  sentences in the new documentation; a new directory under `logs/` falls
+  through to the ambiguous label; dead code in the suffix arm; the STRICT
+  note calls a fatal item "tolerated". The re-auditor also proposed
+  closing M1 (the well-formed-append hole) with `sys.addaudithook` on
+  in-process opens of the canonical paths — under-detection only, never a
+  false failure — which round 4a-7 is to prototype and measure.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -939,7 +956,8 @@ Open, each with its verdict so far:
   quote kept and pinned; the rubric fence covered; session-id recovery
   consults the manifest first (reversing both forms); a malformed
   manifest raises `ManifestFormatError` and exits 2 before anything is
-  written. Merged with main (f8a0489); coordinator suite running.
+  written. Merged with main (f8a0489), coordinator suite 4333 passed, 2
+  skipped, 19 deselected, exit 0; **PR #146**; re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
