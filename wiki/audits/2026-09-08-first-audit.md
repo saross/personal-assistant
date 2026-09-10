@@ -1606,7 +1606,18 @@ PATH).
 
 ## Decisions for Shawn
 
-**D9 (added 2026-09-10) — re-baseline the phase-1 regression anchors.**
+**D9 (added 2026-09-10) — re-baseline the phase-1 regression anchors.
+DONE 2026-09-10** (Shawn's choice: re-baseline): the table now holds the
+clean corpus's schema-2 values with the bands unchanged; phase 1 exits 0
+with all thirteen anchors within tolerance. The table edit itself was
+not put through a fresh-context audit.
+
+**D6 — filed 2026-09-10.** Shawn deleted the remote branch and filed a
+GitHub Support request (via Repository features → Branches) naming
+`refs/pull/115/head` and the five commits whose trees carry the private
+rows (4baee34, 093f0bc, 4d5d94c, 5bdcdfd, 6b14323); the squash commit on
+main is clean. Awaiting the ticket's reply; verify by a 404 on a commit
+URL. Other clones may still hold the branch (zbook to check).
 `phase1_pipeline.py` compares thirteen "regression vs run 1" anchors
 against the 2026-05 raw-corpus run (139,105 words) with `exact` or ±2 %
 tolerances; the clean corpus (127,718 words, references separated) has
