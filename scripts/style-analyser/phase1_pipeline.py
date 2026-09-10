@@ -732,25 +732,34 @@ def aggregate(per_paper: list[dict], full_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Regression check against the 10 run-1 anchors (plan §2.5)
+# Regression check against the anchors (plan §2.5)
 # ---------------------------------------------------------------------------
 
-# (anchor_name, run_1_value, tolerance_lo, tolerance_hi, kind)
+# (anchor_name, reference_value, tolerance_lo, tolerance_hi, kind)
 # kind = "pct" → tolerance is ±% of the anchor; "abs" → ±absolute units
+#
+# Re-baselined 2026-09-10 (audit decision D9). The original values were
+# run 1's (2026-05, raw PDFs with references included: 139,105 words).
+# The clean corpus (references separated, 127,718 words) has failed 12 of
+# 13 of those since 2026-05-24, so every clean run exited 1 and the exit
+# code meant nothing. The values below are the clean corpus measured
+# under metric schema 2 on 2026-09-10; the bands are unchanged. The
+# output key stays `regression_vs_run_1` for its readers; the `run_1`
+# field in each row now holds this reference value.
 RUN1_ANCHORS = [
-    ("n_words",         139105, 0.02, 0.02, "pct"),
-    ("n_sentences",     5448,   0.02, 0.02, "pct"),
-    ("mean_sentence",   23.9,   0.5,  0.5,  "abs"),
-    ("first_plural_per_1k", 4.83, 0.05, 0.05, "abs"),
-    ("em_dash_per_1k",  0.46,   0.05, 0.05, "abs"),
-    ("semicolon_per_1k", 5.57,  0.10, 0.10, "abs"),
-    ("while_count",     232,    0, 0,    "exact"),
+    ("n_words",         127718, 0.02, 0.02, "pct"),
+    ("n_sentences",     5832,   0.02, 0.02, "pct"),
+    ("mean_sentence",   21.45,  0.5,  0.5,  "abs"),
+    ("first_plural_per_1k", 4.988, 0.05, 0.05, "abs"),
+    ("em_dash_per_1k",  0.572,  0.05, 0.05, "abs"),
+    ("semicolon_per_1k", 6.538, 0.10, 0.10, "abs"),
+    ("while_count",     227,    0, 0,    "exact"),
     ("whilst_count",    0,      0, 0,    "exact"),
-    ("however_count",   126,    0, 0,    "exact"),
-    ("although_count",  72,     0, 0,    "exact"),
-    ("pace_count",      9,      0, 0,    "exact"),
-    ("uk_core_total",   177,    0, 0,    "exact"),
-    ("us_core_total",   55,     0, 0,    "exact"),
+    ("however_count",   123,    0, 0,    "exact"),
+    ("although_count",  70,     0, 0,    "exact"),
+    ("pace_count",      8,      0, 0,    "exact"),
+    ("uk_core_total",   168,    0, 0,    "exact"),
+    ("us_core_total",   44,     0, 0,    "exact"),
 ]
 
 
