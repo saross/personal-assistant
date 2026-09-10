@@ -84,24 +84,76 @@ def has_receipt(seen: Path, message_name: str) -> bool:
     return plain_file(seen / message_name)
 
 
+KNOWN_HEADERS = frozenset({"From", "To", *ROUTING_HEADERS})
+_KNOWN_FOLDED = {name.casefold(): name for name in KNOWN_HEADERS}
+
+
 def read_headers(message: Path) -> dict[str, str]:
     """Return the bounded header block as a dict; never any message text.
 
-    Headers end at the first blank line. Only known names are kept, so an
-    attacker-controlled body cannot smuggle a header past the blank line.
+    Headers end at the first blank line, which must fall inside the first
+    MAX_HEADER_BYTES bytes: a block with no terminator in that window is
+    rejected outright (``{}``), because a restriction written past the
+    window would otherwise be lost and the message delivered as a
+    wildcard. Only known names are kept, so an attacker-controlled body
+    cannot smuggle a header past the blank line.
+
+    Four rules, matched with the Codex-side hook after the cross-review of
+    2026-09-10 (its stricter reading was right on every count): the file is
+    read as BYTES and split on LF only, so a vertical tab, U+2028, or a
+    carriage return stays inside the value and fails the slug rule rather
+    than starting a forged header line; a duplicate known header rejects
+    the whole block rather than letting the last one win; a header name
+    that case-folds or strips to a known name without matching it exactly
+    (``project:``, ``Project :``) rejects the block rather than being
+    silently dropped, which would have turned a restriction into a
+    wildcard; and a block that is not UTF-8 rejects.
     """
     try:
-        with message.open("r", encoding="utf-8") as handle:
+        with message.open("rb") as handle:
             prefix = handle.read(MAX_HEADER_BYTES)
-    except (OSError, UnicodeError):
+    except OSError:
         return {}
     headers: dict[str, str] = {}
-    for line in prefix.splitlines():
-        if not line.strip():
+    terminated = False
+    # Only LF-terminated fragments are lines: the last element of the split
+    # is whatever followed the final LF (or the whole prefix, with no LF),
+    # and it is never a complete line. Without the [:-1], a prefix of
+    # exactly MAX_HEADER_BYTES ending in a single LF produced an empty
+    # trailing fragment that read as the blank terminator, so a Lane
+    # written just past the window was dropped and the message delivered
+    # to every lane (Codex review of PR #157, boundary 1).
+    for raw in prefix.split(b"\n")[:-1]:
+        if raw.endswith(b"\r"):
+            raw = raw[:-1]         # one CR of a CRLF ending; a second stays
+        if raw.strip(b" \t") == b"":
+            # Blank means horizontal whitespace only. A line holding just a
+            # vertical tab is not blank; it is a malformed line, and
+            # treating it as the terminator dropped every header after it
+            # (boundary 2).
+            terminated = True
             break
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}
         name, separator, value = line.partition(":")
-        if separator and name in {"From", "To", *ROUTING_HEADERS}:
-            headers[name] = value.strip()
+        if not separator:
+            continue
+        if name in KNOWN_HEADERS:
+            if name in headers:
+                return {}          # a duplicate known header rejects the block
+            headers[name] = value.strip(" \t")
+        elif name.strip().casefold() in _KNOWN_FOLDED:
+            # Near-miss DETECTION strips every kind of whitespace, including
+            # a vertical tab or a Unicode space glued to the name, so
+            # "Lane\x0b:" is rejected rather than dropped as unknown (which
+            # would have lost the lane silently). Accepted values and the
+            # blank-line test keep the narrow space-or-tab strip: detection
+            # returns {}, so being broad here rejects rather than filters.
+            return {}
+    if not terminated:
+        return {}
     return headers
 
 
@@ -180,8 +232,30 @@ def message_project(headers: dict[str, str]) -> str:
     return (safe_value(headers.get("Project", "")) or ANY).casefold()
 
 
+ROUTING_FIELDS = ("Project", "Lane", "Workstream")
+
+
+def routing_is_valid(headers: dict[str, str]) -> bool:
+    """True when every routing header is a slug, blank, or absent.
+
+    The written rule (agent-mail-proposal.md, "Routing (v3)") is that any
+    invalid routing value routes the message nowhere. Gating on Project
+    alone let a message with a wildcard project and a forged Lane or
+    Workstream (``bad; field: forged``) route here while ``annotate()``
+    printed that field as ``invalid`` — found by the Codex-side review of
+    2026-09-10. All three fields decide delivery.
+    """
+    return all(safe_value(headers.get(name, "")) != "invalid" for name in ROUTING_FIELDS)
+
+
 def routes_here(headers: dict[str, str], project: str) -> bool:
-    """True when a message is for this session's project or for any project."""
+    """True when a message is for this session's project or for any project.
+
+    A message with any malformed routing field never routes here, whatever
+    its project says.
+    """
+    if not routing_is_valid(headers):
+        return False
     target = message_project(headers)
     # "invalid" never matches: a session whose own project is invalid must
     # not collect every message with a malformed Project header.
@@ -245,8 +319,10 @@ def route(unread: list[Path], project: str) -> Routed:
             here.append((message, headers))
         else:
             # message_project() is already a safe slug (or "invalid"); the
-            # hook and the watcher both print these keys.
-            target = message_project(headers)
+            # hook and the watcher both print these keys. A message held for
+            # a malformed Lane or Workstream is counted under "invalid" too,
+            # never under the project it claims.
+            target = message_project(headers) if routing_is_valid(headers) else "invalid"
             elsewhere[target] = elsewhere.get(target, 0) + 1
     return here, elsewhere
 
@@ -262,7 +338,11 @@ def safe_value(value: str) -> str:
     value ``invalid``. An empty value stays empty so absent headers are
     omitted from the annotation.
     """
-    value = value.strip()
+    # Strip horizontal whitespace only: an unrestricted strip() removed a
+    # trailing vertical tab or other control character and passed the
+    # remainder as a slug, filtering the very characters the rule exists
+    # to reject (Codex review of PR #157, boundary 3).
+    value = value.strip(" \t")
     if not value:
         return ""
     if len(value) > MAX_HEADER_VALUE or any(ch not in SAFE_CHARS for ch in value):

@@ -14,6 +14,8 @@ import io
 import json
 import os
 import subprocess
+
+import pytest
 from pathlib import Path
 
 # conftest.py adds hooks/ to sys.path; the filename is hyphenated.
@@ -430,3 +432,131 @@ class TestSessionProjectIsValidated:
     def test_an_invalid_session_project_collects_no_invalid_mail(self):
         assert not mail.routes_here({"Project": "x y"}, "invalid")
         assert mail.routes_here({"Project": "any"}, "invalid")
+
+
+# ---- added 2026-09-10 after the Codex-side review of PR #113 ----
+
+class TestEveryRoutingFieldGatesDelivery:
+    """Kills: gating delivery on Project alone while annotate() renders a
+    forged Lane or Workstream as ``invalid`` (found by Astra, 2026-09-10).
+    The written rule is that any invalid routing value routes nowhere."""
+
+    @pytest.mark.parametrize("field", ["Lane", "Workstream"])
+    @pytest.mark.parametrize("project", ["", "any", "personal-assistant"])
+    def test_a_malformed_lane_or_workstream_never_routes_here(self, field, project):
+        headers = {"Project": project, field: "bad; field: forged"}
+        assert not mail.routes_here(headers, "personal-assistant")
+        assert "invalid" in mail.annotate(headers)
+
+    @pytest.mark.parametrize("field", ["Lane", "Workstream"])
+    def test_a_slug_lane_or_workstream_still_routes(self, field):
+        headers = {"Project": "any", field: "gpt-5-high"}
+        assert mail.routes_here(headers, "personal-assistant")
+
+    def test_a_held_message_is_counted_as_invalid_not_under_its_project(self, tmp_path):
+        outbox = tmp_path / "codex" / "outbox" / "claude"
+        outbox.mkdir(parents=True)
+        (outbox / "20260910T000001.000000Z-codex-held.md").write_text(
+            "From: codex\nTo: claude\nProject: personal-assistant\n"
+            "Lane: bad; field: forged\n\nbody\n", encoding="utf-8")
+        (outbox / "20260910T000002.000000Z-codex-ok.md").write_text(
+            "From: codex\nTo: claude\nProject: personal-assistant\nLane: fable\n\nbody\n",
+            encoding="utf-8")
+        unread = mail.unread_messages(tmp_path)
+        here, elsewhere = mail.route(unread, "personal-assistant")
+        assert [m.name for m, _ in here] == ["20260910T000002.000000Z-codex-ok.md"]
+        assert elsewhere == {"invalid": 1}
+
+
+# ---- added 2026-09-10 after the cross-review of gpt-hub PR #5 ----
+
+class TestHeaderParsingMatchesTheCodexHook:
+    """The Codex-side hook was stricter on four forgery cases and right on
+    each; these pin the same verdicts here (rejection, not filtering)."""
+
+    @staticmethod
+    def _message(tmp_path, body: bytes) -> Path:
+        outbox = tmp_path / "codex" / "outbox" / "claude"
+        outbox.mkdir(parents=True, exist_ok=True)
+        path = outbox / "20260910T000003.000000Z-codex-parse.md"
+        path.write_bytes(body)
+        return path
+
+    def test_a_duplicate_known_header_rejects_the_block(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\nProject: secret-repo\n\nbody\n")
+        assert mail.read_headers(m) == {}
+        assert mail.unread_messages(tmp_path) == []
+
+    @pytest.mark.parametrize("sep", [b"\x0b", " ".encode("utf-8"), b"\r"])
+    def test_a_control_character_stays_inside_the_value(self, tmp_path, sep):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\nLane: fa" + sep + b"Project: secret\n\nbody\n")
+        headers = mail.read_headers(m)
+        assert headers.get("Project") == "any"          # not forged to "secret"
+        assert not mail.routes_here(headers, "secret")
+        assert not mail.routes_here(headers, "personal-assistant")  # the lane is invalid
+
+    def test_a_terminator_beyond_the_window_rejects_the_block(self, tmp_path):
+        filler = b"X-Pad: " + b"a" * 4_200 + b"\n"
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\n" + filler + b"Lane: opus\n\nbody\n")
+        assert mail.read_headers(m) == {}
+        assert mail.unread_messages(tmp_path) == []
+
+    @pytest.mark.parametrize("name", [b"project", b"Project ", b"PROJECT", b"lane",
+                                      b"Lane\x0b", "Lane\u2003".encode("utf-8"),
+                                      b"\x0bProject", "\u00a0Lane".encode("utf-8")])
+    def test_a_near_miss_header_name_rejects_the_block(self, tmp_path, name):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\n" + name + b": secret-repo\n\nbody\n")
+        assert mail.read_headers(m) == {}
+
+    def test_an_unknown_header_is_still_ignored_and_the_block_kept(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nX-Extra: whatever\nProject: any\n\nbody\n")
+        assert mail.read_headers(m) == {"From": "codex", "To": "claude", "Project": "any"}
+
+    def test_the_window_is_bytes_not_characters(self, tmp_path):
+        # 4,000 multi-byte characters exceed 4,096 bytes; the terminator falls outside.
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nX-Pad: " + ("é" * 4_000).encode("utf-8") + b"\n\nbody\n")
+        assert mail.read_headers(m) == {}
+
+
+# ---- added 2026-09-10 after the Codex review of PR #157 (boundaries) ----
+
+class TestHeaderBoundaries:
+    """Three boundary gaps Astra reproduced against b2ead61."""
+
+    @staticmethod
+    def _message(tmp_path, body: bytes) -> Path:
+        outbox = tmp_path / "codex" / "outbox" / "claude"
+        outbox.mkdir(parents=True, exist_ok=True)
+        path = outbox / "20260910T000004.000000Z-codex-boundary.md"
+        path.write_bytes(body)
+        return path
+
+    def test_an_exact_window_ending_in_one_lf_is_not_terminated(self, tmp_path):
+        head = b"From: codex\nTo: claude\nProject: any\n"
+        pad = b"X-Pad: " + b"a" * (mail.MAX_HEADER_BYTES - len(head) - len(b"X-Pad: ") - 1) + b"\n"
+        body = head + pad
+        assert len(body) == mail.MAX_HEADER_BYTES and body.endswith(b"\n")
+        m = self._message(tmp_path, body + b"Lane: opus\n\nbody\n")
+        assert mail.read_headers(m) == {}       # the Lane beyond the window is not lost silently
+
+    def test_a_control_only_line_is_not_a_blank_terminator(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\n\x0b\nLane: opus\n\nbody\n")
+        headers = mail.read_headers(m)
+        assert headers.get("Lane") == "opus"       # the VT line did not end the block
+        assert mail.routes_here(headers, "personal-assistant")   # From/To/any + a slug lane
+
+    def test_a_horizontal_whitespace_line_is_a_terminator(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\n \t\nLane: opus\n")
+        assert mail.read_headers(m) == {"From": "codex", "To": "claude", "Project": "any"}
+
+    @pytest.mark.parametrize("tail", ["\x0b", "\x00", " ", "\r"])
+    def test_a_trailing_control_character_makes_the_value_invalid(self, tail):
+        assert mail.safe_value("fable" + tail) == "invalid"
+        assert not mail.routing_is_valid({"Lane": "fable" + tail})
+
+    def test_a_crlf_message_parses_and_a_bare_cr_does_not(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\r\nTo: claude\r\nProject: any\r\nLane: fable\r\n\r\nbody\r\n")
+        assert mail.read_headers(m) == {"From": "codex", "To": "claude", "Project": "any", "Lane": "fable"}
+        m2 = self._message(tmp_path, b"From: codex\nTo: claude\nLane: fa\rble\n\nbody\n")
+        headers = mail.read_headers(m2)
+        assert mail.safe_value(headers.get("Lane", "")) == "invalid"
