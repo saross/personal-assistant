@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-three PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-four PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -756,7 +756,7 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140, #145, #152
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
-#136, #141
+#136, #141, #147
 (archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
 then one, then two);
 #142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
@@ -1273,8 +1273,13 @@ Open, each with its verdict so far:
   hollow (the `_rclone_writing` stub never records argv), taken in a
   closing round 4c-8 with two dead-comment/dead-assignment lows; deferred
   lows: no fixture exceeds ten manifest entries; the lint skips
-  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Merge on a green
-  suite after the one-line fix.
+  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Round 4c-8
+  delivered (fbb5a2d): the stub records argv per subcommand, the
+  ordering test asserts the copy ran, a positive control asserts copyto
+  runs after a successful copy; the coordinator verified independently
+  that moving the catalogue push above the copy now fails the named
+  test. Coordinator suite 4586 passed, exit 0. **Merged 0a49f15**
+  2026-09-10 — the live R2 fix is on main.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
