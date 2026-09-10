@@ -2287,6 +2287,12 @@ def test_the_tolerated_noise_note_reaches_the_terminal(tmp_path):
     assert "hermeticity" in combined, combined[-2000:]
     assert "tolerated shared-checkout noise" in combined
     assert "daily-sync.lock" in combined
+    # The LABEL, at its call site. Round 4a-7, finding M-f1: replacing
+    # describe_tolerated_kind(path) with the literal "a lock file or a
+    # rotation" left 3937 tests green, because the function had its own
+    # tests and the call site had none — the same shape as round 4a-4's M1.
+    assert "(a lock file)" in combined, combined[-2000:]
+    assert "a lock file or a rotation" not in combined
     assert result.returncode == 0
 
 
@@ -2662,58 +2668,99 @@ def test_a_test_cannot_leak_a_basetemp_path_into_the_summary(tmp_path,
     assert all(str(tmp_path) in path for path in queued), queued
 
 
-def test_the_session_queue_holds_no_basetemp_path(request):
-    """A belt-and-braces net: nothing under a tmp root may reach the summary.
-
-    If a future test ever escapes the isolation, this names it rather than
-    letting the run print a warning about a path nobody owns.
-    """
-    basetemp = request.config.getoption("basetemp") or "/tmp/pytest-of-"
-    for key, entries in conftest._DEFERRED_REPORT.items():
-        for entry in entries:
-            assert str(basetemp) not in entry, (
-                f"a test leaked a basetemp path into the {key} queue: {entry}")
-
-
 # --------------------------------------------------------------------------
 # M2 — an unterminated fragment is content too
 # --------------------------------------------------------------------------
 
 
-def test_an_unterminated_garbage_fragment_is_a_violation(tmp_path,
-                                                         monkeypatch):
-    """With no complete lines the content loop never ran.
+#: The two tail shapes and what each must do in each mode (round 4a-7,
+#: finding M-b1). A short write cuts the record mid-JSON and the newline is
+#: the LAST byte to arrive, so a truncated object is the state that really
+#: occurs; requiring the tail to parse tolerated only the state that almost
+#: never does, and a real truncated append failed an advisory run.
+_TRUNCATED_RECORD = '{"id": "2031-01-03-999988887777", "content": "half a rec'
+_GARBAGE_FRAGMENT = "not json at all"
 
-    ``handle.write("not json at all")`` with no newline left the loop empty
-    and ``partial.strip()`` short-circuited straight to "an append in
-    progress", so a garbage fragment was tolerated in advisory mode and the
-    run exited 0. Kills the mutation that skips ``_line_problem(kind,
-    partial)``.
+
+@pytest.mark.parametrize("strict", [False, True], ids=["advisory", "strict"])
+@pytest.mark.parametrize("tail,is_prefix", [
+    (_TRUNCATED_RECORD, True),
+    (_GARBAGE_FRAGMENT, False),
+], ids=["json-prefix", "garbage"])
+def test_the_four_unterminated_tail_cells(tmp_path, monkeypatch, strict,
+                                          tail, is_prefix):
+    """All four cells of (advisory|strict) x (JSON prefix|garbage).
+
+    A truncated JSON object is what a short write leaves behind, so in
+    advisory mode it is reported as in-progress; garbage never is. Under
+    STRICT nothing should be writing at all, so both fail.
+
+    Kills the mutation that requires the tail to PARSE (which refuses the
+    truncated record in advisory mode) and the one that drops the check
+    entirely (which tolerates the garbage).
+    """
+    if strict:
+        monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+    else:
+        monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
+    corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
+
+    before = conftest._canonical_store_snapshot()
+    with corpus.open("a", encoding="utf-8") as handle:
+        handle.write(tail)
+
+    if strict or not is_prefix:
+        expected = ("not terminated" if is_prefix
+                    else "does not start a JSON record")
+        with pytest.raises(AssertionError, match=expected):
+            conftest.assert_canonical_store_untouched(
+                before, conftest._canonical_store_snapshot())
+        return
+
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert any("not terminated" in entry for entry in tolerated), tolerated
+
+
+def test_a_truncated_record_after_a_complete_one_is_in_progress(tmp_path,
+                                                                monkeypatch):
+    """The real shape: one whole record, then a cut-off one.
+
+    This is what a short write on the second append actually produces.
     """
     monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
     corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
 
     before = conftest._canonical_store_snapshot()
     with corpus.open("a", encoding="utf-8") as handle:
-        handle.write("not json at all")
+        handle.write(json.dumps({
+            "id": "2031-01-02-ddddeeeeffff",
+            "content": "A complete record.",
+            "created_at": "2031-01-02T00:00:00+00:00",
+        }) + "\n")
+        handle.write(_TRUNCATED_RECORD)
 
-    with pytest.raises(AssertionError, match="not JSON"):
-        conftest.assert_canonical_store_untouched(
-            before, conftest._canonical_store_snapshot())
+    _appended, tolerated = conftest.assert_canonical_store_untouched(
+        before, conftest._canonical_store_snapshot())
+    assert any("not terminated" in entry for entry in tolerated), tolerated
 
 
-def test_an_unterminated_garbage_fragment_is_a_violation_under_strict(
-    tmp_path, monkeypatch,
-):
-    """And the same in a clean copy."""
-    monkeypatch.setenv(conftest.STRICT_ENV_VAR, "1")
+def test_a_fragment_spanning_a_newline_is_a_violation(tmp_path, monkeypatch):
+    """Text carrying its own line break is judged as COMPLETE lines.
+
+    ``{"id": "a",`` is a complete line and is not JSON, so it fails before
+    the unterminated tail is ever considered. (The prefix rule needs no
+    newline test of its own: its input is the last element of a ``"\n"``
+    split.)
+    """
+    monkeypatch.delenv(conftest.STRICT_ENV_VAR, raising=False)
     corpus, _vocabulary, _logs = _throwaway_store(tmp_path, monkeypatch)
 
     before = conftest._canonical_store_snapshot()
     with corpus.open("a", encoding="utf-8") as handle:
-        handle.write("not json at all")
+        handle.write('{"id": "a",\n "content": "spans a break')
 
-    with pytest.raises(AssertionError, match="not JSON"):
+    with pytest.raises(AssertionError):
         conftest.assert_canonical_store_untouched(
             before, conftest._canonical_store_snapshot())
 
@@ -2851,6 +2898,26 @@ def test_under_logs_is_anchored_on_the_separator(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 
+def test_a_new_directory_is_labelled_as_one(tmp_path):
+    """A directory is decided by what it IS, not by its name.
+
+    Kills the mutation that drops the ``is_dir()`` arm: a subtree called
+    ``run.2`` was labelled "a log rotation", and an ordinary one fell
+    through to the catch-all (round 4a-7, finding L-e1).
+    """
+    plain = tmp_path / "terra-enrich-responses"
+    plain.mkdir()
+    numbered = tmp_path / "run.2"
+    numbered.mkdir()
+
+    assert conftest.describe_tolerated_kind(str(plain)) == "a new directory"
+    assert conftest.describe_tolerated_kind(str(numbered)) == "a new directory"
+    # The same NAME as a file is a rotation again.
+    (tmp_path / "extraction.log.2").write_text("", encoding="utf-8")
+    assert conftest.describe_tolerated_kind(
+        str(tmp_path / "extraction.log.2")) == "a log rotation"
+
+
 @pytest.mark.parametrize("entry,expected", [
     ("/x/logs/daily-sync.lock", "a lock file"),
     ("/x/logs/extraction.log.1", "a log rotation"),
@@ -2941,3 +3008,558 @@ def test_a_partial_line_of_only_whitespace_is_not_a_violation(tmp_path,
         before, conftest._canonical_store_snapshot())
     assert appended == [str(corpus.resolve())]
     assert tolerated == []
+
+
+# ===========================================================================
+# The queue net catches a WIDER-scoped leak (round 4a-7, finding M-a1)
+#
+# isolated_report is function-scoped, so a session- or module-scoped fixture
+# that queues into _DEFERRED_REPORT writes to the real dict and the summary
+# warns about a path under pytest's own basetemp. The round 4a-6 "net" could
+# not see it: the autouse isolation applied to that test too, so it always
+# inspected an empty monkeypatched dict, and most of the suite ran after it.
+# ===========================================================================
+
+#: A nested conftest whose SESSION-scoped fixture queues a basetemp path —
+#: the leak shape the function-scoped isolation cannot reach.
+_NESTED_SESSION_LEAK = "\n".join([
+    "",
+    "@pytest.fixture(scope='session', autouse=True)",
+    "def _leaks_a_basetemp_path(tmp_path_factory):",
+    "    leaked = tmp_path_factory.mktemp('leaked')",
+    "    _DEFERRED_REPORT['source_changes'] = [",
+    "        str(leaked / 'someone-elses-note.md')]",
+    "    yield",
+    "",
+])
+
+
+def test_a_session_scoped_fixture_cannot_leak_into_the_summary(tmp_path):
+    """A wider-scoped leak fails the nested run instead of crying wolf.
+
+    Reproduces the finding exactly: a ``scope="session", autouse=True``
+    fixture queues a ``tmp_path_factory`` path. Before the net that run
+    exited 0 and printed "WARNING: the checkout's source trees changed …
+    /bt/leaked0/someone-elses-note.md". Kills the mutation that deletes
+    ``pytest_sessionfinish``, and the one that stops setting
+    ``session.exitstatus``.
+    """
+    result = _run_nested(tmp_path, _NESTED_SESSION_LEAK,
+                         _nested_test_body("pass"))
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2000:]
+    assert "leaked a temporary path" in combined
+    assert "someone-elses-note.md" in combined
+    # And the wolf-cry must NOT appear: the leaked entry is dropped, so the
+    # summary cannot report it as a real source change.
+    assert "the checkout's source trees changed" not in combined
+    # The exit code is 1, but pytest's own stats line still reads green,
+    # because it is built before this hook runs (round 4a-8, finding L1).
+    # The compensating line has to be there, or the run looks like a pass.
+    assert "EXIT STATUS 1" in combined, (
+        "nothing in the output says the run failed")
+
+
+def test_the_net_leaves_a_real_source_change_alone(tmp_path):
+    """A genuine change outside the basetemp still reports normally.
+
+    Kills a mutation that drops every queue entry rather than the leaked
+    ones: the net must not swallow the warning it exists to protect.
+    """
+    result = _run_nested(tmp_path, _NESTED_OVERRIDE,
+                         _nested_test_body(
+                             "(_ROOT / 'watched' / 'left-behind.md')"
+                             ".write_text('x\\n', encoding='utf-8')"))
+
+    combined = result.stdout + result.stderr
+    assert "the checkout's source trees changed" in combined
+    assert "left-behind.md" in combined
+    assert "leaked a temporary path" not in combined
+    assert result.returncode == 0
+
+
+def test_the_basetemp_roots_cover_both_sources(tmp_path, monkeypatch):
+    """The net looks at ``--basetemp`` AND the factory's own root.
+
+    A run may use either, so checking one leaves the other unguarded.
+    """
+    class _Option:
+        basetemp = str(tmp_path / "explicit")
+
+    class _Factory:
+        @staticmethod
+        def getbasetemp():
+            return tmp_path / "factory"
+
+    class _Config:
+        option = _Option()
+        _tmp_path_factory = _Factory()
+
+    roots = conftest._basetemp_roots(_Config())
+    assert any("explicit" in root for root in roots)
+    assert any("factory" in root for root in roots)
+
+
+def test_the_new_log_label_reaches_the_terminal(tmp_path):
+    """A second class through the same call site, so one literal cannot pass.
+
+    With only the lock-file case asserted, replacing the call with the
+    literal "a lock file" would still be green. Two classes through one
+    call site means no constant satisfies both.
+    """
+    result = _run_nested(
+        tmp_path, _NESTED_POPULATED_STORE,
+        _nested_test_body(
+            "(_ROOT / 'data' / 'logs' / 'drift-sweep.jsonl')"
+            ".write_text('{}\\n', encoding='utf-8')"),
+    )
+
+    combined = result.stdout + result.stderr
+    assert "tolerated shared-checkout noise" in combined, combined[-2000:]
+    assert "(a new log file)" in combined
+    assert "drift-sweep.jsonl" in combined
+    assert result.returncode == 0
+
+
+def test_the_strict_note_does_not_call_a_fatal_item_tolerated(tmp_path):
+    """Under STRICT the same entry FAILED, so the wording must not say
+    "tolerated" flatly (round 4a-7, finding L-g1)."""
+    result = _run_nested(
+        tmp_path, _NESTED_POPULATED_STORE,
+        _nested_test_body(
+            "(_ROOT / 'data' / 'logs' / 'daily-sync.lock')"
+            ".write_text('', encoding='utf-8')"),
+        {conftest.STRICT_ENV_VAR: "1"},
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2000:]
+    assert "would be tolerated in advisory mode" in combined
+    assert "fatal under PA_HERMETICITY_STRICT" in combined
+    assert "note: tolerated shared-checkout noise" not in combined
+
+
+def test_the_net_drops_only_the_leaked_entry(tmp_path):
+    """A run with BOTH a leak and a real source change keeps the real one.
+
+    Kills the mutation that replaces the selective drop with
+    ``_DEFERRED_REPORT.clear()``: the leak would be reported and the
+    genuine warning silently thrown away with it.
+    """
+    override = _NESTED_OVERRIDE + "\n".join([
+        "",
+        "@pytest.fixture(scope='session', autouse=True)",
+        "def _also_leaks(tmp_path_factory):",
+        "    leaked = tmp_path_factory.mktemp('leaked')",
+        # Into `tolerated`, not `source_changes`: the session teardown
+        # ASSIGNS source_changes when it finds a real change, which would
+        # overwrite the leak before the net ever saw it.
+        "    _DEFERRED_REPORT.setdefault('tolerated', []).append(",
+        "        str(leaked / 'not-mine.md'))",
+        "    yield",
+        "",
+    ])
+    result = _run_nested(
+        tmp_path, override,
+        _nested_test_body(
+            "(_ROOT / 'watched' / 'left-behind.md')"
+            ".write_text('x\\n', encoding='utf-8')"),
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2000:]
+    assert "leaked a temporary path" in combined
+    assert "not-mine.md" in combined
+    assert "left-behind.md" in combined, (
+        "the genuine source change was thrown away with the leak")
+
+
+# ===========================================================================
+# The M1 hole, closed by an in-process audit hook (round 4a-7)
+#
+# A well-formed append to the real store is indistinguishable AFTER THE FACT
+# from the extraction hook's. It is distinguishable WHILE IT HAPPENS: the
+# hook runs in another process, so an audit hook in this interpreter sees
+# only what this process opens.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("mode,flags,writing", [
+    ("r", None, False),
+    ("rb", None, False),
+    ("a", None, True),
+    ("w", None, True),
+    ("r+", None, True),
+    ("xb", None, True),
+    (None, os.O_RDONLY, False),
+    (None, os.O_WRONLY | os.O_APPEND, True),
+    (None, os.O_RDWR, True),
+    (None, os.O_CREAT, True),
+    (None, None, False),
+])
+def test_which_open_events_count_as_writing(mode, flags, writing):
+    """``os.open`` reports mode=None, so the flags must be consulted too.
+
+    The first prototype checked only the mode string and missed every
+    ``os.open``; a read must never count. Kills a mutation that drops
+    either half of the test.
+    """
+    assert conftest._audit_is_writing(mode, flags) is writing
+
+
+def test_the_audit_path_helper_accepts_what_the_event_carries(tmp_path):
+    """Every shape the event can carry becomes a string.
+
+    Correcting the record (round 4a-8, M2): an earlier version of this
+    docstring said ``Path.open`` hands the event a ``PosixPath`` and that
+    this was why the first prototype found nothing. Both halves were wrong.
+    On Python 3.13.3 ``_io.open`` fspath-converts before ``sys.audit``, so
+    ``Path.open``, ``Path.read_text`` and ``open(Path)`` all arrive as
+    ``str`` — the assertion below passes a ``Path`` directly to the helper,
+    which is not a route the interpreter takes. ``os.fspath`` is kept as
+    harmless defensiveness, and the bytes branch IS reachable via
+    ``open(b"/path")``.
+
+    The prototype's real failure was C1: it compared the raw event string
+    against the RESOLVED store path while the repository writes through the
+    ``memories`` symlink, so nothing matched.
+    """
+    target = tmp_path / "memories.jsonl"
+    assert conftest._audit_path(target) == str(target)
+    assert conftest._audit_path(str(target)) == str(target)
+    assert conftest._audit_path(str(target).encode()) == str(target)
+    assert conftest._audit_path(7) is None      # an fd, not a path
+    assert conftest._audit_path(None) is None
+
+
+def test_arming_is_a_no_op_without_a_store(tmp_path, monkeypatch):
+    """No store, nothing to watch — and audit hooks cannot be removed.
+
+    An archive export has no store, so arming there would install a
+    permanent hook that could never match.
+    """
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (tmp_path / "absent" / "memories.jsonl",))
+    assert conftest.arm_store_write_audit() is False
+
+
+def test_arming_twice_installs_one_hook(tmp_path, monkeypatch):
+    """``sys.addaudithook`` is permanent, so a second arm must be a no-op.
+
+    Kills a mutation that drops the ``_AUDIT_ARMED`` guard: the session
+    fixture would stack a hook per invocation.
+    """
+    installed = []
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", ())
+    monkeypatch.setattr(sys, "addaudithook",
+                        lambda hook: installed.append(hook))
+    corpus = tmp_path / "memories.jsonl"
+    corpus.write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES", (corpus,))
+
+    assert conftest.arm_store_write_audit() is True
+    assert conftest.arm_store_write_audit() is True
+    assert len(installed) == 1
+
+
+def test_store_write_opens_names_the_test(monkeypatch):
+    """The report must name the test, not just the path."""
+    monkeypatch.setattr(
+        conftest, "_STORE_WRITE_OPENS",
+        [("tests/test_x.py::test_y", "/store/memories.jsonl")])
+    assert conftest.store_write_opens() == [
+        "tests/test_x.py::test_y opened /store/memories.jsonl for writing"]
+
+
+#: A nested tree whose store is populated AND whose test appends a
+#: well-formed record to it — the M1 hole, reproduced end to end.
+_NESTED_M1_APPEND = "\n".join([
+    "import json",
+    "from pathlib import Path",
+    "",
+    "import conftest",
+    "",
+    "",
+    "def test_forgets_to_patch_its_path():",
+    "    corpus = conftest._CANONICAL_FILES[0]",
+    "    with corpus.open('a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-09-ffffeeeedddd',",
+    "            'content': 'appended by a careless test',",
+    "            'created_at': '2031-09-09T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+
+def test_an_in_process_append_is_reported_in_advisory_mode(tmp_path):
+    """The hole itself: a well-formed append the snapshot cannot catch.
+
+    Before the audit hook this run was silent and green — the append was
+    verified as an append and tolerated, exactly as documented. Now the
+    write is named with the test that made it, while the run still passes
+    (advisory). Kills the mutation that drops ``arm_store_write_audit``.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND)
+
+    combined = result.stdout + result.stderr
+    assert "opened the real canonical store for writing" in combined, (
+        combined[-2500:])
+    assert "test_forgets_to_patch_its_path" in combined
+    assert "memories.jsonl" in combined
+    assert result.returncode == 0, "advisory mode reports, it does not fail"
+
+
+def test_an_in_process_append_is_fatal_under_strict(tmp_path):
+    """And in a clean copy it fails the run.
+
+    Kills the mutation that reports without ever failing.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_forgets_to_patch_its_path" in combined
+
+
+def test_a_read_of_the_store_is_not_reported(tmp_path):
+    """Reading the corpus is what most tests legitimately do.
+
+    Kills a mutation that reports every open regardless of mode — which
+    would fail on the guard's own snapshot reads.
+    """
+    body = "\n".join([
+        "import conftest",
+        "",
+        "",
+        "def test_reads_the_store():",
+        "    corpus = conftest._CANONICAL_FILES[0]",
+        "    assert corpus.read_text(encoding='utf-8')",
+        "",
+    ])
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, body,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert "opened the real canonical store for writing" not in combined
+
+
+# ===========================================================================
+# The audit hook must match the path form the REPOSITORY uses (round 4a-8, C1)
+#
+# ``memories`` is a symlink to ``data/memories``, and every production module
+# opens the SYMLINK path (sync-to-postgres.py, drift-sweep.py,
+# fetch-memories.py, sync-to-zotero.py, sync_memory_edit.py all build
+# ``PA_DIR / "memories" / "memories.jsonl"``). The hook stored the RESOLVED
+# path and compared the raw event string, so it never fired on the one form
+# the repository actually writes through — and the whole suite stayed green,
+# because the nested store was a plain directory with no symlink in it.
+# ===========================================================================
+
+#: A nested store reached THROUGH a symlink, exactly as the repository is
+#: laid out: the real files under ``data/memories``, and ``memories`` a
+#: symlink to it. ``_CANONICAL_FILES`` name the SYMLINK path, as conftest's
+#: own do.
+_NESTED_SYMLINKED_STORE = "\n".join([
+    "",
+    "_REAL = Path(__file__).resolve().parent / 'data' / 'memories'",
+    "_REAL.mkdir(parents=True, exist_ok=True)",
+    "_LOGS = Path(__file__).resolve().parent / 'data' / 'logs'",
+    "_LOGS.mkdir(parents=True, exist_ok=True)",
+    "(_REAL / 'memories.jsonl').write_text(",
+    "    '{\"id\": \"2031-01-01-aaaabbbbcccc\", \"content\": \"seed\", '",
+    "    '\"created_at\": \"2031-01-01T00:00:00+00:00\"}\\n', encoding='utf-8')",
+    "(_REAL / 'tag-vocabulary.txt').write_text('kiln\\n', encoding='utf-8')",
+    "_LINK = Path(__file__).resolve().parent / 'memories'",
+    "if not _LINK.exists():",
+    "    _LINK.symlink_to(_REAL)",
+    "_CANONICAL_FILES = (",
+    "    _LINK / 'memories.jsonl', _LINK / 'tag-vocabulary.txt')",
+    "_APPEND_TOLERANT_DIRS = (_LOGS,)",
+    "_CANONICAL_DIRS = (_LOGS,)",
+    "",
+])
+
+#: Appends through the SYMLINK path — what every production module does.
+_NESTED_SYMLINK_APPEND = "\n".join([
+    "import json",
+    "from pathlib import Path",
+    "",
+    "",
+    "def test_writes_through_the_symlink_path():",
+    "    corpus = Path(__file__).resolve().parent / 'memories' / 'memories.jsonl'",
+    "    with corpus.open('a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-10-aaaa11112222',",
+    "            'content': 'appended through the symlink path',",
+    "            'created_at': '2031-09-10T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+#: Appends through a RELATIVE path after chdir — resolved against the cwd as
+#: it stands when the event fires, not when the hook was armed.
+_NESTED_RELATIVE_APPEND = "\n".join([
+    "import json",
+    "import os",
+    "from pathlib import Path",
+    "",
+    "",
+    "def test_writes_through_a_relative_path(monkeypatch):",
+    "    root = Path(__file__).resolve().parent",
+    "    monkeypatch.chdir(root / 'memories')",
+    "    with open('memories.jsonl', 'a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-10-bbbb33334444',",
+    "            'content': 'appended through a relative path',",
+    "            'created_at': '2031-09-10T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+
+def test_a_write_through_the_symlink_path_is_caught(tmp_path):
+    """The form every production module uses must be caught.
+
+    Kills the mutation ``os.path.realpath(path)`` -> the raw event string
+    (equivalently, storing ``str(candidate)`` instead of the real path):
+    with the store reached through a symlink, the hook saw
+    ``…/memories/memories.jsonl`` and the set held
+    ``…/data/memories/memories.jsonl``, so it never fired.
+    """
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE,
+                         _NESTED_SYMLINK_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_writes_through_the_symlink_path" in combined
+
+
+def test_a_write_through_a_relative_path_is_caught(tmp_path):
+    """A relative open after chdir resolves against the cwd at event time.
+
+    Kills the mutation that drops ``realpath`` in favour of a plain string
+    comparison: ``open("memories.jsonl")`` carries no directory at all.
+    """
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE,
+                         _NESTED_RELATIVE_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_writes_through_a_relative_path" in combined
+
+
+def test_a_symlinked_store_read_is_still_not_reported(tmp_path):
+    """Reading through the symlink must stay silent.
+
+    Kills a mutation that reports every open once the path forms match.
+    """
+    body = "\n".join([
+        "from pathlib import Path",
+        "",
+        "",
+        "def test_reads_through_the_symlink():",
+        "    corpus = (Path(__file__).resolve().parent / 'memories'",
+        "              / 'memories.jsonl')",
+        "    assert corpus.read_text(encoding='utf-8')",
+        "",
+    ])
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE, body,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert "opened the real canonical store for writing" not in combined
+
+
+def test_the_basename_filter_rejects_before_resolving(tmp_path, monkeypatch):
+    """The hot path must not call realpath on every open in the suite.
+
+    ``realpath`` stats each component, and the suite opens tens of
+    thousands of files. Kills a mutation that drops the basename pre-filter
+    (or reorders it after the resolve).
+    """
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    corpus = tmp_path / "data" / "memories" / "memories.jsonl"
+    corpus.parent.mkdir(parents=True)
+    corpus.write_text("", encoding="utf-8")
+    link = tmp_path / "memories"
+    link.symlink_to(corpus.parent)
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (link / "memories.jsonl",))
+    installed = []
+    monkeypatch.setattr(sys, "addaudithook", lambda hook: installed.append(hook))
+    assert conftest.arm_store_write_audit() is True
+    hook = installed[0]
+
+    resolved = []
+    real_realpath = os.path.realpath
+    monkeypatch.setattr(
+        os.path, "realpath",
+        lambda p, **kw: (resolved.append(str(p)), real_realpath(p, **kw))[1])
+    monkeypatch.setattr(conftest, "_STORE_WRITE_OPENS", [])
+
+    hook("open", (str(tmp_path / "unrelated.txt"), "w", None))
+    assert resolved == [], "realpath ran on a path the basename filter should reject"
+
+    hook("open", (str(link / "memories.jsonl"), "a", None))
+    assert resolved, "the matching name was never resolved"
+    assert conftest._STORE_WRITE_OPENS, "the symlink path was not recorded"
+    assert conftest._STORE_WRITE_OPENS[0][1] == str(corpus.resolve())
+
+
+def test_the_watched_names_are_the_store_basenames(tmp_path, monkeypatch):
+    """Arming records both the real paths and their names."""
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    store = tmp_path / "memories"
+    store.mkdir()
+    for name in ("memories.jsonl", "tag-vocabulary.txt"):
+        (store / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        tuple(store / n for n in
+                              ("memories.jsonl", "tag-vocabulary.txt")))
+    monkeypatch.setattr(sys, "addaudithook", lambda hook: None)
+
+    assert conftest.arm_store_write_audit() is True
+    assert conftest._AUDITED_NAMES == {"memories.jsonl", "tag-vocabulary.txt"}
+    assert conftest._AUDITED_PATHS == {
+        str((store / "memories.jsonl").resolve()),
+        str((store / "tag-vocabulary.txt").resolve()),
+    }
+
+
+def test_the_store_write_advice_does_not_repeat_a_set_variable(tmp_path):
+    """Under STRICT the note must not tell the operator to set STRICT.
+
+    The `tolerated` block branched on the mode; this one printed "Set
+    PA_HERMETICITY_STRICT=1 to make it fatal" even when it already was, on
+    a run that had just failed because of it (round 4a-8, finding M1).
+    Kills the mutation that drops the branch.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "and this run FAILED on it" in combined
+    assert f"Set {conftest.STRICT_ENV_VAR}=1 to make it fatal" not in combined
+
+
+def test_the_store_write_advice_names_the_switch_in_advisory_mode(tmp_path):
+    """And in advisory mode it must still say how to make it fatal."""
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert f"Set {conftest.STRICT_ENV_VAR}=1 to make it fatal" in combined
+    assert "and this run FAILED on it" not in combined

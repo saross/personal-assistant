@@ -33,17 +33,22 @@ defined; the one thing a reader needs up front is the environment switch:
     append — the earlier bytes must still hash to what they hashed at
     session start, and the appended text must be the shape that writer
     produces — and then tolerated, WITH ITS PATH AND BYTE COUNT
-    REPORTED. A shrink, a rewritten prefix, a deletion, a new file, or
-    appended text of the wrong shape is a failure either way.
+    REPORTED. A shrink, a rewritten prefix, a deletion, or appended text
+    of the wrong shape is a failure either way. A new FILE is a failure
+    either way EXCEPT for the shared-checkout shapes advisory mode
+    tolerates and STRICT does not — a ``*.lock``, a rotation, a new
+    ``.log``/``.json``/``.jsonl`` under ``logs/``, and a new directory
+    under ``logs/``.
 
-    What that leaves uncaught, stated plainly: a test that forgets to
-    patch its path and appends a SHAPE-CORRECT record to the real
-    memories.jsonl passes in both modes. The guard cannot tell that
-    append apart from the extraction hook's — they are the same
-    operation with the same result. It is reported, and the shape check
-    means the line must be a complete record with id, content and
-    created_at, but a test writing exactly that is not stopped. See
-    commands/audit.md for why closing it is not attempted here.
+    A well-formed append cannot be told from the extraction hook's by
+    the snapshot alone, so a SECOND guard runs beside it: an audit hook
+    (``arm_store_write_audit``) watches this interpreter for a
+    write-mode open of a store path. The hook writes from another
+    process and is invisible to it; a test that forgot to patch its
+    path is named in advisory mode and fails the run under STRICT. It
+    under-detects (a subprocess, or a C-level write, evades it) and
+    never over-detects, so it cannot fail a live checkout falsely. It
+    costs about +1.6 % on a full run.
 
 """
 
@@ -368,6 +373,229 @@ Last updated: 2024-02-08
 
 
 
+#: Set by :func:`pytest_sessionfinish` when a test leaked a temporary path
+#: into the report queue, and printed by :func:`pytest_terminal_summary`.
+_QUEUE_LEAK: list[str] = []
+
+
+
+# ---------------------------------------------------------------------------
+# Closing the well-formed-append hole (round 4a-7, the M1 proposal)
+#
+# A test that forgets to patch its path and appends a SHAPE-CORRECT record to
+# the real memories.jsonl is indistinguishable, after the fact, from the
+# extraction hook doing its job: same file, same operation, same result. The
+# snapshot comparison therefore cannot catch it, and M1 stood documented
+# rather than fixed.
+#
+# It IS distinguishable while it happens: the extraction hook runs in a
+# separate process, so an audit hook in THIS interpreter sees only what this
+# process opens. ``sys.addaudithook`` gives us that, and its failure mode is
+# under-detection — a subprocess or a C-level write evades it — never a false
+# failure in a live checkout, which is the property that makes it safe to run
+# where other sessions are working.
+#
+# Measured cost: +2.5 s on a full run (about +1.6 %) from PAIRED runs, and
+# about +0.5 µs per open (0.588 µs over 40 000 opens here; the re-auditor
+# measured 0.45 µs). An earlier note claimed "none detectable" — that came
+# from two unpaired runs on a loaded machine and was wrong (round 4a-8, L2).
+# The basename pre-filter is what keeps it to that: realpath() stats every
+# component and must never run on the hot path.
+# ---------------------------------------------------------------------------
+
+#: ``(nodeid, path)`` for every in-process write-open of a watched file.
+_STORE_WRITE_OPENS: list[tuple[str, str]] = []
+
+#: Resolved canonical paths the audit hook watches. Empty when the store is
+#: not present (an archive export), which is also when the hook is not armed.
+_AUDITED_PATHS: set[str] = set()
+
+#: Their basenames, for the hook's first-pass reject. Comparing two short
+#: strings costs nothing; ``realpath`` stats every component, so it runs only
+#: once a name has already matched.
+_AUDITED_NAMES: set[str] = set()
+
+#: ``sys.addaudithook`` cannot be undone, so arm at most once per process.
+_AUDIT_ARMED: list[bool] = [False]
+
+#: Open modes that can modify a file. ``r`` alone is not one of them.
+_WRITING_MODE_CHARS = frozenset("wax+")
+
+
+def _audit_path(raw: object) -> str | None:
+    """The path an audit event carries, as a string, or ``None``.
+
+    Correcting the record (round 4a-8, finding M2): an earlier comment here
+    claimed ``Path.open`` hands the event a ``PosixPath`` and that this was
+    why the first prototype reported nothing. That is FALSE on Python
+    3.13.3 — ``_io.open`` fspath-converts before ``sys.audit``, so
+    ``Path.open``, ``Path.read_text`` and ``open(Path)`` all arrive here as
+    ``str``, and no route hands the event a ``PosixPath``.
+
+    The ``os.fspath`` call is kept as harmless defensiveness: it costs one
+    C-level type check on a path that has already passed the basename
+    filter, and it makes the function correct for any caller or future
+    interpreter that does pass a path-like object. The bytes branch is real
+    — ``open(b"/path")`` does carry bytes.
+
+    The prototype's actual failure was finding C1: it compared the raw
+    event string against the RESOLVED store path, and the repository
+    reaches the store through the ``memories`` symlink, so nothing ever
+    matched. The mode/flags gap fixed alongside it was real but secondary.
+    """
+    try:
+        path = os.fspath(raw)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+    if isinstance(path, bytes):
+        return path.decode("utf-8", "replace")
+    return path
+
+
+def _audit_is_writing(mode: object, flags: object) -> bool:
+    """Does this ``open`` event modify the file?
+
+    ``open(path, "a")`` reports its mode as a string. ``os.open`` raises the
+    same event with ``mode=None`` and the real flags, so the flags have to
+    be consulted too — the first prototype checked only the string and
+    missed every ``os.open``.
+    """
+    if isinstance(mode, str):
+        return bool(_WRITING_MODE_CHARS & set(mode))
+    if isinstance(flags, int):
+        writing = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT
+        writing |= getattr(os, "O_TRUNC", 0)
+        return bool(flags & writing)
+    return False
+
+
+def arm_store_write_audit() -> bool:
+    """Watch this process for a write-open of a canonical store file.
+
+    Returns whether the hook is armed. Not armed when the store is absent
+    (nothing to watch) or when a previous call already armed it — audit
+    hooks are permanent, so installing one per session fixture invocation
+    would stack them.
+    """
+    if _AUDIT_ARMED[0]:
+        return True
+    _AUDITED_PATHS.clear()
+    _AUDITED_NAMES.clear()
+    for candidate in _CANONICAL_FILES:
+        try:
+            if candidate.exists():
+                # The REAL path, because that is the one form every route
+                # into the file agrees on. ``memories`` is a symlink to
+                # ``data/memories``, and every production module opens the
+                # SYMLINK path (``PA_DIR / "memories" / "memories.jsonl"``),
+                # so comparing the raw string the event carries matched
+                # nothing at all (round 4a-8, finding C1).
+                _AUDITED_PATHS.add(os.path.realpath(candidate))
+                _AUDITED_NAMES.add(candidate.name)
+        except OSError:  # pragma: no cover — unreadable path
+            continue
+    if not _AUDITED_PATHS:
+        return False
+
+    def _hook(event: str, args: tuple) -> None:
+        # Cheapest possible reject first: this runs for every audit event in
+        # the process, and the suite opens tens of thousands of files.
+        if event != "open":
+            return
+        path = _audit_path(args[0])
+        if path is None:
+            return
+        # Basename first: a string compare against two short names, which
+        # rejects essentially every open in the suite without touching the
+        # filesystem. Only then resolve — realpath() stats each component,
+        # so it must not be on the hot path.
+        if os.path.basename(path) not in _AUDITED_NAMES:
+            return
+        # realpath, not resolve(): it follows the symlink AND anchors a
+        # relative path against the cwd as it stands at event time.
+        real = os.path.realpath(path)
+        if real not in _AUDITED_PATHS:
+            return
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else None
+        if not _audit_is_writing(mode, flags):
+            return
+        _STORE_WRITE_OPENS.append((str(_ACTIVE_TEST["nodeid"]), real))
+
+    sys.addaudithook(_hook)
+    _AUDIT_ARMED[0] = True
+    return True
+
+
+def store_write_opens() -> list[str]:
+    """One line per in-process write-open, naming the test that did it."""
+    return [f"{nodeid} opened {path} for writing"
+            for nodeid, path in _STORE_WRITE_OPENS]
+
+
+def _basetemp_roots(config) -> list[str]:
+    """Every directory pytest hands tests for temporary files, resolved.
+
+    Both the explicit ``--basetemp`` and the factory's own root, because a
+    run may use either, and both are resolved through symlinks so a
+    ``/tmp`` that is really ``/private/tmp`` still matches.
+    """
+    roots: list[str] = []
+    explicit = getattr(config.option, "basetemp", None)
+    if explicit:
+        roots.append(str(Path(explicit)))
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is not None:
+        try:
+            roots.append(str(factory.getbasetemp()))
+        except Exception:  # pragma: no cover — factory not yet built
+            pass
+    resolved = []
+    for root in roots:
+        resolved.append(root)
+        try:
+            resolved.append(str(Path(root).resolve()))
+        except OSError:  # pragma: no cover
+            pass
+    return sorted(set(resolved))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the session if a test leaked a temporary path into the queue.
+
+    ``isolated_report`` is FUNCTION-scoped, so a session- or module-scoped
+    fixture that queues into :data:`_DEFERRED_REPORT` writes to the real
+    dict and the terminal summary then warns about a path under pytest's
+    own basetemp — the exact symptom round 4a-6 set out to remove, reached
+    by a different route (round 4a-7, finding M-a1).
+
+    This runs after every fixture of every scope has been torn down, so the
+    queue it inspects is the one the summary is about to print. The check
+    the round 4a-6 net attempted could not work as an ordinary test: the
+    autouse isolation applied to it too, so it always inspected an empty
+    monkeypatched dict, and two thirds of the suite was collected after it.
+    """
+    roots = _basetemp_roots(session.config)
+    if not roots:
+        return
+    leaked = [
+        f"{key}: {entry}"
+        for key, entries in _DEFERRED_REPORT.items()
+        for entry in entries
+        if any(root in entry for root in roots)
+    ]
+    if not leaked:
+        return
+    _QUEUE_LEAK.extend(leaked)
+    # Drop them, so the summary cannot go on to report a temporary path as
+    # though the checkout had changed.
+    for key, entries in list(_DEFERRED_REPORT.items()):
+        _DEFERRED_REPORT[key] = [
+            entry for entry in entries
+            if not any(root in entry for root in roots)
+        ]
+    session.exitstatus = 1
+
 def describe_tolerated_kind(entry: str) -> str:
     """Name the class of one tolerated entry.
 
@@ -378,24 +606,24 @@ def describe_tolerated_kind(entry: str) -> str:
     if "not terminated" in entry:
         return "an append in progress"
     path = entry.split(" (")[0]
+    # A directory first: it is decided by what it IS, not by its name, so a
+    # subtree called ``run.2`` is not a rotation (round 4a-7, L-e1).
+    if Path(path).is_dir():
+        return "a new directory"
     if path.endswith(".lock"):
         return "a lock file"
     if path.endswith(_TOLERATED_NEW_LOG_SUFFIXES):
-        stem = path
-        for suffix in _COMPRESSION_SUFFIXES:
-            if stem.endswith(suffix):
-                stem = stem[: -len(suffix)]
-                break
-        base, _, tail = stem.rpartition(".")
-        if tail.isdigit() or stem != path:
-            return "a log rotation"
+        # Nothing ending in a tolerated suffix can be a rotation: a rotated
+        # file gains a digit or a compression suffix AFTER that extension,
+        # so it no longer ends with one (round 4a-7, L-f2 — the arm that
+        # tested for it here was dead).
         return "a new log file"
     if any(path.endswith(suffix) for suffix in _COMPRESSION_SUFFIXES):
         return "a log rotation"
-    stem, _, tail = path.rpartition(".")
+    _stem, _, tail = path.rpartition(".")
     if tail.isdigit():
         return "a log rotation"
-    return "a new directory or a rotated file"
+    return "a rotated file"
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -410,9 +638,35 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """
     coverage = strict_store_coverage_warning()
     report = dict(_DEFERRED_REPORT)
-    if not report and not coverage:
+    if not report and not coverage and not _QUEUE_LEAK:
         return
     terminalreporter.write_sep("=", "hermeticity", yellow=True)
+    for entry in _QUEUE_LEAK:
+        terminalreporter.write_line(
+            f"ERROR: a test leaked a temporary path into the hermeticity "
+            f"report queue, so this run would have warned about a path "
+            f"nobody owns: {entry}", red=True,
+        )
+    if _QUEUE_LEAK:
+        terminalreporter.write_line(
+            "  A fixture wider than function scope queued into "
+            "_DEFERRED_REPORT; the autouse isolation only covers function "
+            "scope. The session has been failed.", red=True,
+        )
+        # NB (round 4a-8, finding L1): the process exits 1, but the final
+        # ``-q`` line still reads e.g. "1 passed" in green. pytest builds
+        # that line from its own ``stats`` counters, not from
+        # ``session.exitstatus``, and the counters are fixed before this
+        # hook runs. Registering a stand-in report in ``stats["error"]``
+        # does change the line, but ``summary_stats`` then calls private
+        # reporter API on the entry (``_get_verbose_word_with_markup``),
+        # which couples this guard to pytest internals for a cosmetic gain.
+        # The line below is the compensation: it is red, it is last before
+        # the stats line, and it says what the exit code means.
+        terminalreporter.write_line(
+            "  EXIT STATUS 1 — read the exit code, not the green summary "
+            "line below it.", red=True,
+        )
     if coverage:
         terminalreporter.write_line(coverage, yellow=True)
     for path in report.get("source_changes", []):
@@ -426,13 +680,37 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"not the suite. Set {STRICT_ENV_VAR}=1 where nothing else is "
             "writing to make it fatal.", yellow=True,
         )
+    for line in report.get("store_writes", []):
+        terminalreporter.write_line(
+            f"WARNING: a test opened the real canonical store for writing: "
+            f"{line}", red=True,
+        )
+    if report.get("store_writes"):
+        advice = (
+            "and this run FAILED on it"
+            if hermeticity_is_strict()
+            else f"Set {STRICT_ENV_VAR}=1 to make it fatal"
+        )
+        terminalreporter.write_line(
+            "  The extraction hook writes from another process, so this was "
+            f"this one. {advice}.", red=True,
+        )
     for line in report.get("appends", []):
         terminalreporter.write_line(
             f"note: the live system appended to {line}", yellow=True)
     for path in report.get("tolerated", []):
+        # Under STRICT this same entry FAILED the run, so calling it
+        # "tolerated" contradicts the error the operator just read
+        # (round 4a-7, L-g1).
+        prefix = (
+            f"would be tolerated in advisory mode; fatal under "
+            f"{STRICT_ENV_VAR}"
+            if hermeticity_is_strict()
+            else "tolerated shared-checkout noise"
+        )
         terminalreporter.write_line(
-            f"note: tolerated shared-checkout noise "
-            f"({describe_tolerated_kind(path)}): {path}", yellow=True,
+            f"note: {prefix} ({describe_tolerated_kind(path)}): {path}",
+            yellow=True,
         )
 
 # ---------------------------------------------------------------------------
@@ -1169,12 +1447,25 @@ def _appended_content_problem(
     """Why the bytes appended to ``path`` are not what its writer emits.
 
     Returns ``(problem, in_progress)``. ``problem`` is ``None`` when the
-    appended text is plausible. ``in_progress`` is true when the ONLY thing
-    wrong is that the last appended line has no terminating newline — a
-    writer caught mid-line, or a crash-truncated tail. That is a normal
-    sight in a live checkout and is tolerated in advisory mode, but it stays
-    fatal under STRICT, where nothing should be writing at all (round 4a-5,
-    finding 5).
+    appended text is plausible.
+
+    ``in_progress`` is true when every COMPLETE appended line is valid and
+    the unterminated tail is a plausible START of one. For
+    ``memories.jsonl`` that means the tail begins with ``{`` — a truncated
+    JSON object, which is what a short write actually leaves behind. The
+    writer (``hooks/extraction-hook.py``) builds
+    ``json.dumps(mem) + "\n"`` and issues ONE ``os.write`` under
+    ``LOCK_SH``, so a partial write cuts the record mid-JSON and the newline
+    is the last byte to arrive; requiring the tail to PARSE (round 4a-6,
+    M2) therefore tolerated only the one state a short write almost never
+    produces, and a real truncated append failed an advisory run (round
+    4a-7, M-b1). A tail that does not start with ``{`` is not a prefix of
+    any record the writer emits, so it stays a violation. For the
+    vocabulary the tail must be a bare-tag prefix, judged by the same rule
+    as a complete line.
+
+    ``in_progress`` is advisory-only: under STRICT nothing should be
+    writing at all, so the caller fails on it either way.
 
     Growth alone used to be enough to call an append benign, so a test that
     appended a garbage line to the real ``memories.jsonl`` was classified as
@@ -1208,13 +1499,35 @@ def _appended_content_problem(
         # Judge it too: with NO complete lines the loop above never ran, so
         # a lone unterminated garbage fragment used to be waved through as
         # "an append in progress" (round 4a-6, finding M2). A fragment is
-        # only in-progress if what there is of it is still the right shape.
-        problem = _line_problem(kind, partial)
+        # in-progress only if it is a plausible START of a record.
+        problem = _partial_line_problem(kind, partial)
         if problem is not None:
             return f"{problem} (and the line is unterminated)", False
         return ("the final appended line is not terminated — an append in "
                 "progress, or a crash-truncated tail"), True
     return None, False
+
+
+def _partial_line_problem(kind: str, partial: str) -> str | None:
+    """Why an UNTERMINATED tail is not the start of a line ``kind`` emits.
+
+    A complete line must parse; a partial one cannot, because no proper
+    prefix of a JSON object is valid JSON. So the test is structural: for
+    ``memories.jsonl`` the tail must open a JSON object and contain no
+    newline of its own; for the vocabulary it must satisfy the same
+    bare-tag rule a complete line does (a partial tag is still a tag).
+    Anything else — prose, a stray log line, a fragment that never started
+    a record — is a violation (round 4a-7, finding M-b1).
+    """
+    stripped = partial.strip()
+    if kind == "memories.jsonl":
+        if not stripped.startswith("{"):
+            return "an appended fragment does not start a JSON record"
+        # No newline test here: ``partial`` is the last element of a "\n"
+        # split, so it cannot contain one. A fragment that spans a break is
+        # caught as a malformed COMPLETE line before this is reached.
+        return None
+    return _line_problem(kind, partial)
 
 
 def _line_problem(kind: str, line: str) -> str | None:
@@ -1443,6 +1756,7 @@ def no_real_cache_writes():
     )
     before = _pipeline_cache_snapshot()
     store_before = _canonical_store_snapshot()
+    arm_store_write_audit()
     yield
     after = _pipeline_cache_snapshot()
     # No digests on the second snapshot: the only prefix that matters is the
@@ -1502,9 +1816,21 @@ def no_real_cache_writes():
     # landing in the same run cannot mask a store violation underneath it
     # (round 4a-5, finding 6). The notes above are queued either way, so the
     # terminal summary still explains a failing run.
+    opens = store_write_opens()
+    if opens:
+        _DEFERRED_REPORT["store_writes"] = list(opens)
+
     problems: list[str] = []
     if store_violations:
         problems.append(_store_failure_text(store_violations))
+    if opens and hermeticity_is_strict():
+        detail = "\n".join(f"    {line}" for line in opens)
+        problems.append(
+            "a test opened the REAL canonical store for writing "
+            f"({STRICT_ENV_VAR}=1, so this is fatal). The extraction hook "
+            "runs in another process, so this was THIS process — a test "
+            f"that did not patch its path:\n{detail}"
+        )
     if source_changes and hermeticity_is_strict():
         detail = "\n".join(f"    {path}" for path in source_changes)
         problems.append(
