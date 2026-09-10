@@ -14,6 +14,8 @@ import io
 import json
 import os
 import subprocess
+
+import pytest
 from pathlib import Path
 
 # conftest.py adds hooks/ to sys.path; the filename is hyphenated.
@@ -430,3 +432,37 @@ class TestSessionProjectIsValidated:
     def test_an_invalid_session_project_collects_no_invalid_mail(self):
         assert not mail.routes_here({"Project": "x y"}, "invalid")
         assert mail.routes_here({"Project": "any"}, "invalid")
+
+
+# ---- added 2026-09-10 after the Codex-side review of PR #113 ----
+
+class TestEveryRoutingFieldGatesDelivery:
+    """Kills: gating delivery on Project alone while annotate() renders a
+    forged Lane or Workstream as ``invalid`` (found by Astra, 2026-09-10).
+    The written rule is that any invalid routing value routes nowhere."""
+
+    @pytest.mark.parametrize("field", ["Lane", "Workstream"])
+    @pytest.mark.parametrize("project", ["", "any", "personal-assistant"])
+    def test_a_malformed_lane_or_workstream_never_routes_here(self, field, project):
+        headers = {"Project": project, field: "bad; field: forged"}
+        assert not mail.routes_here(headers, "personal-assistant")
+        assert "invalid" in mail.annotate(headers)
+
+    @pytest.mark.parametrize("field", ["Lane", "Workstream"])
+    def test_a_slug_lane_or_workstream_still_routes(self, field):
+        headers = {"Project": "any", field: "gpt-5-high"}
+        assert mail.routes_here(headers, "personal-assistant")
+
+    def test_a_held_message_is_counted_as_invalid_not_under_its_project(self, tmp_path):
+        outbox = tmp_path / "codex" / "outbox" / "claude"
+        outbox.mkdir(parents=True)
+        (outbox / "20260910T000001.000000Z-codex-held.md").write_text(
+            "From: codex\nTo: claude\nProject: personal-assistant\n"
+            "Lane: bad; field: forged\n\nbody\n", encoding="utf-8")
+        (outbox / "20260910T000002.000000Z-codex-ok.md").write_text(
+            "From: codex\nTo: claude\nProject: personal-assistant\nLane: fable\n\nbody\n",
+            encoding="utf-8")
+        unread = mail.unread_messages(tmp_path)
+        here, elsewhere = mail.route(unread, "personal-assistant")
+        assert [m.name for m, _ in here] == ["20260910T000002.000000Z-codex-ok.md"]
+        assert elsewhere == {"invalid": 1}

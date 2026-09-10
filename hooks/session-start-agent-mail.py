@@ -180,8 +180,30 @@ def message_project(headers: dict[str, str]) -> str:
     return (safe_value(headers.get("Project", "")) or ANY).casefold()
 
 
+ROUTING_FIELDS = ("Project", "Lane", "Workstream")
+
+
+def routing_is_valid(headers: dict[str, str]) -> bool:
+    """True when every routing header is a slug, blank, or absent.
+
+    The written rule (agent-mail-proposal.md, "Routing (v3)") is that any
+    invalid routing value routes the message nowhere. Gating on Project
+    alone let a message with a wildcard project and a forged Lane or
+    Workstream (``bad; field: forged``) route here while ``annotate()``
+    printed that field as ``invalid`` — found by the Codex-side review of
+    2026-09-10. All three fields decide delivery.
+    """
+    return all(safe_value(headers.get(name, "")) != "invalid" for name in ROUTING_FIELDS)
+
+
 def routes_here(headers: dict[str, str], project: str) -> bool:
-    """True when a message is for this session's project or for any project."""
+    """True when a message is for this session's project or for any project.
+
+    A message with any malformed routing field never routes here, whatever
+    its project says.
+    """
+    if not routing_is_valid(headers):
+        return False
     target = message_project(headers)
     # "invalid" never matches: a session whose own project is invalid must
     # not collect every message with a malformed Project header.
@@ -245,8 +267,10 @@ def route(unread: list[Path], project: str) -> Routed:
             here.append((message, headers))
         else:
             # message_project() is already a safe slug (or "invalid"); the
-            # hook and the watcher both print these keys.
-            target = message_project(headers)
+            # hook and the watcher both print these keys. A message held for
+            # a malformed Lane or Workstream is counted under "invalid" too,
+            # never under the project it claims.
+            target = message_project(headers) if routing_is_valid(headers) else "invalid"
             elsewhere[target] = elsewhere.get(target, 0) + 1
     return here, elsewhere
 
