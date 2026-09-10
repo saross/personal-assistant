@@ -2376,8 +2376,14 @@ details outside the pass criteria, no rule or errno change, 140 tests,
 four mutations killed; three follow-ups (a placeholder rename that can
 replace a pre-existing sibling, inherited from #7; malformed protocol
 replies labelled harness; the record's prerequisites). Verdict mailed;
-Astra may land it. **Next: Shawn reruns the host comparison** to get
-the attributed report (`/tmp/sol-live-acceptance-attributed-host.json`).
+Astra took the three follow-ups within minutes (aa4684e: an occupied
+or uninspectable rename destination refuses the rename with a closed
+not-attempted outcome; malformed protocol replies are protocol
+observations; prerequisites listed) and a narrow final check approved
+it — five mutations killed, an ablation of the prerequisites matching
+the record. **Next: Shawn reruns the host comparison** with the command
+pinned to that source, to get the attributed report
+(`/tmp/sol-live-acceptance-attributed-host.json`).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
