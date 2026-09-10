@@ -116,8 +116,21 @@ def read_headers(message: Path) -> dict[str, str]:
         return {}
     headers: dict[str, str] = {}
     terminated = False
-    for raw in prefix.split(b"\n"):
-        if raw.strip() == b"":
+    # Only LF-terminated fragments are lines: the last element of the split
+    # is whatever followed the final LF (or the whole prefix, with no LF),
+    # and it is never a complete line. Without the [:-1], a prefix of
+    # exactly MAX_HEADER_BYTES ending in a single LF produced an empty
+    # trailing fragment that read as the blank terminator, so a Lane
+    # written just past the window was dropped and the message delivered
+    # to every lane (Codex review of PR #157, boundary 1).
+    for raw in prefix.split(b"\n")[:-1]:
+        if raw.endswith(b"\r"):
+            raw = raw[:-1]         # one CR of a CRLF ending; a second stays
+        if raw.strip(b" \t") == b"":
+            # Blank means horizontal whitespace only. A line holding just a
+            # vertical tab is not blank; it is a malformed line, and
+            # treating it as the terminator dropped every header after it
+            # (boundary 2).
             terminated = True
             break
         try:
@@ -131,7 +144,7 @@ def read_headers(message: Path) -> dict[str, str]:
             if name in headers:
                 return {}          # a duplicate known header rejects the block
             headers[name] = value.strip(" \t")
-        elif name.strip().casefold() in _KNOWN_FOLDED:
+        elif name.strip(" \t").casefold() in _KNOWN_FOLDED:
             return {}              # a near-miss name would silently widen delivery
     if not terminated:
         return {}
@@ -319,7 +332,11 @@ def safe_value(value: str) -> str:
     value ``invalid``. An empty value stays empty so absent headers are
     omitted from the annotation.
     """
-    value = value.strip()
+    # Strip horizontal whitespace only: an unrestricted strip() removed a
+    # trailing vertical tab or other control character and passed the
+    # remainder as a slug, filtering the very characters the rule exists
+    # to reject (Codex review of PR #157, boundary 3).
+    value = value.strip(" \t")
     if not value:
         return ""
     if len(value) > MAX_HEADER_VALUE or any(ch not in SAFE_CHARS for ch in value):
