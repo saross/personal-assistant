@@ -291,11 +291,36 @@ class TestTheDivergenceCommentIsTrue:
     """
 
     @staticmethod
-    def _shipped_set() -> set[int]:
-        """The code points the shipped SQL trim expression actually names."""
+    def _expression() -> str:
+        """The shipped SQL trim expression, as written."""
         source = (SCRIPTS / "zotero.py").read_text(encoding="utf-8")
-        expression = source.split("_SQL_TRIMMED_DOI = (", 1)[1].split(")\n", 1)[0]
-        return {int(n) for n in re.findall(r"char\((\d+)\)", expression)}
+        return source.split("_SQL_TRIMMED_DOI = (", 1)[1].split(")\n", 1)[0]
+
+    @staticmethod
+    def _shipped_set() -> set[int]:
+        """The code points the shipped SQL trim expression actually names.
+
+        Round 4d-7 (L-iii): the old extraction matched ``char\\((\\d+)\\)``,
+        one integer per call. SQLite's ``char()`` is variadic, so
+        ``char(9, 10)`` -- a perfectly valid narrowing of the trim set --
+        matched nothing, silently shrank the set this test believes is
+        shipped, and every assertion built on it passed over the change.
+        Parse the whole argument list, and refuse anything that is not a
+        list of integers rather than skipping it.
+        """
+        expression = TestTheDivergenceCommentIsTrue._expression()
+        shipped: set[int] = set()
+        calls = re.findall(r"char\(([^)]*)\)", expression)
+        assert calls, f"no char() calls found in: {expression}"
+        for arguments in calls:
+            for argument in arguments.split(","):
+                argument = argument.strip()
+                assert argument.isdigit(), (
+                    f"char() argument {argument!r} is not an integer "
+                    f"literal; this test can no longer read the trim set"
+                )
+                shipped.add(int(argument))
+        return shipped
 
     @staticmethod
     def _comment() -> str:
@@ -304,6 +329,29 @@ class TestTheDivergenceCommentIsTrue:
         return source.split("#: SQL expression trimming", 1)[1].split(
             "_SQL_TRIMMED_DOI", 1
         )[0]
+
+    def test_every_trimmed_character_is_whitespace(self) -> None:
+        """L1 — the trim set may contain nothing but whitespace.
+
+        The count test above only looks at whitespace code points ABSENT
+        from the shipped set, so adding a non-whitespace character to the
+        expression was invisible to it: ``char(8239) || char(48)`` --
+        which strips ASCII "0" off a stored DOI on the SQL side while the
+        Python side keeps it -- survived the whole suite. That is not a
+        cosmetic divergence; it silently changes which DOIs are considered
+        the same, in the direction of false matches.
+        """
+        shipped = self._shipped_set()
+        assert shipped, "no char() entries found in the expression"
+        offenders = [
+            f"char({c}) = {chr(c)!r}"
+            for c in sorted(shipped)
+            if not chr(c).isspace()
+        ]
+        assert offenders == [], (
+            "the SQL trim set strips characters Python's str.strip keeps: "
+            + ", ".join(offenders)
+        )
 
     def test_the_stated_count_matches_the_shipped_set(self) -> None:
         """Recompute the divergence over the whole of Unicode."""
