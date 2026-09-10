@@ -144,8 +144,14 @@ def read_headers(message: Path) -> dict[str, str]:
             if name in headers:
                 return {}          # a duplicate known header rejects the block
             headers[name] = value.strip(" \t")
-        elif name.strip(" \t").casefold() in _KNOWN_FOLDED:
-            return {}              # a near-miss name would silently widen delivery
+        elif name.strip().casefold() in _KNOWN_FOLDED:
+            # Near-miss DETECTION strips every kind of whitespace, including
+            # a vertical tab or a Unicode space glued to the name, so
+            # "Lane\x0b:" is rejected rather than dropped as unknown (which
+            # would have lost the lane silently). Accepted values and the
+            # blank-line test keep the narrow space-or-tab strip: detection
+            # returns {}, so being broad here rejects rather than filters.
+            return {}
     if not terminated:
         return {}
     return headers

@@ -501,7 +501,9 @@ class TestHeaderParsingMatchesTheCodexHook:
         assert mail.read_headers(m) == {}
         assert mail.unread_messages(tmp_path) == []
 
-    @pytest.mark.parametrize("name", [b"project", b"Project ", b"PROJECT", b"lane"])
+    @pytest.mark.parametrize("name", [b"project", b"Project ", b"PROJECT", b"lane",
+                                      b"Lane\x0b", "Lane\u2003".encode("utf-8"),
+                                      b"\x0bProject", "\u00a0Lane".encode("utf-8")])
     def test_a_near_miss_header_name_rejects_the_block(self, tmp_path, name):
         m = self._message(tmp_path, b"From: codex\nTo: claude\n" + name + b": secret-repo\n\nbody\n")
         assert mail.read_headers(m) == {}
