@@ -1471,11 +1471,16 @@ Operator actions pending, in order of consequence:
    D9 below. The guide itself (`phase3_guide_verifier`, phase 5) has NOT
    been re-derived — that is the analyser agent's run, not an operator
    step.
-2. Run `sync-to-postgres.py` before any `archive-memories --apply` or
-   `dedup-memories` (both refuse while the cursor is behind or unreadable).
+2. ~~Run `sync-to-postgres.py` before any `archive-memories --apply` or
+   `dedup-memories` (both refuse while the cursor is behind or unreadable).~~
+   **Done 2026-09-10 14:40**: the cursor sits at the store's last line
+   (43,398); the gate reads 0; Postgres holds 47,943 rows (the surplus is
+   the known Postgres-only set).
 3. Agree an `ENV_FINGERPRINT_SALT` out of band before the next cross-machine
    `.env` comparison (the tool refuses without it; old fingerprints are not
-   comparable).
+   comparable). Shawn's to hold in his password manager and type in at
+   comparison time (`read -rs`), never in `.env` or on a command line
+   (2026-09-10).
 4. Expect the first `audit-postgres-sync` and `/memory-health` after #129 to
    FAIL on content divergence and Postgres-only orphans (real, not noise).
 5. Expect the first drift sweep to refuse once with a `--min-repos` line if
@@ -1488,7 +1493,11 @@ Operator actions pending, in order of consequence:
    ("immutable file modified", 2026-09-09 10:28) — the catalog is a file
    that legitimately changes, so it needs to be exempted from
    `--immutable` (or pushed separately without it) before the next push
-   can complete; until then every push exits 3.
+   can complete; until then every push exits 3. **Closed 2026-09-10**:
+   PR #147 pushes the catalogue separately; the merged script's dry run
+   against the bucket exited 0; and Shawn's own `rclone ls --include
+   "*.tmp"` over the bucket (credentials sourced in his shell) listed
+   nothing, so no temporary was ever pushed.
 7. `PA_HERMETICITY_STRICT=1` is the contract for audit and clean-copy runs
    (see `commands/audit.md`); shared checkouts warn instead of failing on
    concurrent edits.
