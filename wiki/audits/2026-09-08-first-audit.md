@@ -1372,8 +1372,8 @@ Open, each with its verdict so far:
   diagnostic reported once by parameter (a state-dict marker was
   rejected as a leak); `assemble_requests` validates first;
   `known_session_ids` removed; the help slice scoped within the options
-  section. Merged with main (a163fcb); coordinator suite, PR, and
-  re-audit pending.
+  section. Merged with main (a163fcb), coordinator suite 4550 passed,
+  19 deselected, exit 0; **PR #156**; re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
