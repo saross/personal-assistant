@@ -126,7 +126,12 @@ GUIDE_PATH = (
     REPO_ROOT
     / "notes/style-guides/academic/style-guide-academic-2026-05-30-2.md"
 )
-EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
+#: Derived from style_support so that repointing one base moves EVERY path
+#: in the experiment together (round 4g-5, item L-b2). It did not: the base
+#: moved --judge-dir and --key-dir while --passages-dir and four other
+#: scripts kept their own hard-coded copy, so a "second experiment" would
+#: have been assembled half in one directory and half in another.
+EXPERIMENT_DIR = style_support.experiment_root()
 C2_CONTEXT_PATH = EXPERIMENT_DIR / "prompt-c2-context.md"
 MANIFEST_PATH = EXPERIMENT_DIR / "prompts.json"
 

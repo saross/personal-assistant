@@ -1320,27 +1320,28 @@ def main() -> int:
                          "on stdout what would have been written")
     args = ap.parse_args()
 
-    if not args.phase1.exists():
-        print(f"Phase 1 input not found: {args.phase1}", file=sys.stderr)
-        return 2
-    if not args.phase3.exists():
-        print(f"Phase 3 input not found: {args.phase3}", file=sys.stderr)
-        return 2
-
-    phase1 = load_json(args.phase1)
-    phase3 = load_json(args.phase3)
-    # The input below is measured with today's phase 1 code; the corpus it is
-    # scored against must have been measured the same way, or the distance is
-    # between two different measurements (re-audit item 4). Phase 3 is checked
-    # with it: the feature space itself — which metrics are bimodal, and so
-    # which are excluded from the Mahalanobis distance — is read from phase 3,
-    # and a promotion file computed from superseded measurements answers that
+    # FIRST, before anything can read a corpus: load both phase files through
+    # the checked loader, which refuses before returning either of them.
+    #
+    # The input below is measured with today's phase 1 code, so the corpus it
+    # is scored against must have been measured the same way or the distance
+    # is between two different measurements. Phase 3 is checked with it: the
+    # feature space itself — which metrics are bimodal, and so which are
+    # excluded from the Mahalanobis distance — is read from phase 3, and a
+    # promotion file computed from superseded measurements answers that
     # question about different metrics than the ones being scored.
-    for payload, source in ((phase1, args.phase1), (phase3, args.phase3)):
-        stale = style_support.metric_schema_error(payload, source)
-        if stale:
-            print(stale, file=sys.stderr)
-            return 2
+    #
+    # A single call rather than a check-then-load sequence, because the
+    # sequence's ordering could only be asserted by reading the source, and
+    # every way of defeating it (hoisting the loop into a nested function
+    # called later, wrapping it in an environment condition, emptying its
+    # iterable) satisfied that assertion (round 4g-5, M-a1).
+    payloads, problem = style_support.load_checked_payloads(
+        [args.phase1, args.phase3])
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    phase1, phase3 = payloads
 
     import spacy
     nlp = spacy.load(args.spacy_model)

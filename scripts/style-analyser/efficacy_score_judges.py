@@ -55,8 +55,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import style_support  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXP = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
 #: Both locations come from `style_support`, which is also where the builder
 #: reads them: one description of the layout, so the writer and the reader
 #: cannot disagree. They did once — the builder moved the key under `private/`

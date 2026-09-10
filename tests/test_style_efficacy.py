@@ -380,86 +380,206 @@ def test_scoring_no_passage_at_all_exits_two(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Round 4g-3 item 4 — efficacy_score must check phase 3's stamp too
+# The scorer's phase inputs (round 4g-3 item 4; round 4g-5 item M-a1)
 # ---------------------------------------------------------------------------
 
-def test_the_scorer_checks_every_phase_input_it_reads():
-    """--phase3 was the one input whose stamp went unchecked.
+def _score_main_ast():
+    """Return the AST of ``efficacy_score.main`` without importing it.
 
-    ``efficacy_score`` imports the Phase 5 evaluator, and so numpy, at module
-    scope; the stdlib-reachable way to assert what its ``main`` checks is to
-    read the source. The mutation this kills: dropping ``args.phase3`` from
-    the candidates loop, which lets a feature space built from superseded
-    measurements decide which metrics are scored.
+    The module imports the Phase 5 evaluator, and so numpy, at module scope,
+    and numpy is deliberately absent here.
     """
     import ast
 
     from style_test_helpers import SCRIPTS_DIR
 
     source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
-    main_fn = next(node for node in ast.parse(source).body
-                   if isinstance(node, ast.FunctionDef) and node.name == "main")
-
-    checked: set[str] = set()
-    for node in ast.walk(main_fn):
-        if not isinstance(node, ast.For):
-            continue
-        calls = [c for c in ast.walk(node)
-                 if isinstance(c, ast.Call)
-                 and isinstance(c.func, ast.Attribute)
-                 and c.func.attr == "metric_schema_error"]
-        if not calls:
-            continue
-        checked |= {element.attr for element in ast.walk(node.iter)
-                    if isinstance(element, ast.Attribute)
-                    and isinstance(element.value, ast.Name)
-                    and element.value.id == "args"}
-
-    assert {"phase1", "phase3", "reference_phase1"} <= checked
+    return ast.parse(source), next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "main")
 
 
-#: Calls in ``efficacy_score.main`` that CONSUME a phase-1 or phase-3 payload.
-_PHASE_CONSUMING_CALLS = ("load_corpus_space", "evaluate_text",
-                          "evaluation_to_dict")
+def _call_name(call) -> str | None:
+    """The name a call resolves to, for `f()` and `mod.f()` alike."""
+    import ast
+
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
 
 
-def test_the_scorer_checks_the_stamps_before_it_uses_the_corpus():
-    """A check that runs after ``load_corpus_space`` is not an interlock.
+def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
+    """One call, a literal list, and the payloads FED to the consumer.
 
-    The feature space, the fitted model and the leave-one-out envelope are all
-    built inside that call. Moving the stamp loop below it left the suite
-    green while every one of those was built from a corpus the check had not
-    seen. The mutation this kills: moving the loop below
-    ``load_corpus_space(...)``.
+    ``load_checked_payloads`` refuses before returning any payload — tested
+    directly, without numpy, in ``tests/test_style_support.py``. What this
+    asserts is that ``main`` cannot route around it: the list it hands over
+    is a non-empty literal naming all three inputs (a filtering comprehension
+    is how ``if p is not None`` became ``if p is None`` and handed the loader
+    an empty list), the result is unpacked, and those unpacked names are what
+    ``load_corpus_space`` receives — so no file is read again after the
+    check.
+
+    The mutations this kills: emptying or filtering the list; `if problem:` →
+    `if False:`; and passing ``args.phase1``-style PATHS to
+    ``load_corpus_space`` again, which is the check-then-reload this replaces.
     """
     import ast
 
-    from style_test_helpers import SCRIPTS_DIR
+    _module, main_fn = _score_main_ast()
+    loader_calls = [node for node in ast.walk(main_fn)
+                    if isinstance(node, ast.Call)
+                    and _call_name(node) == "load_checked_payloads"]
 
-    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
-    main_fn = next(node for node in ast.parse(source).body
-                   if isinstance(node, ast.FunctionDef) and node.name == "main")
-
-    def called_name(call: ast.Call) -> str | None:
-        if isinstance(call.func, ast.Name):
-            return call.func.id
-        if isinstance(call.func, ast.Attribute):
-            return call.func.attr
-        return None
-
-    stamp_line = min(
-        node.lineno for node in ast.walk(main_fn)
-        if isinstance(node, ast.For)
-        and any(called_name(c) == "metric_schema_error"
-                for c in ast.walk(node) if isinstance(c, ast.Call))
+    assert len(loader_calls) == 1
+    argument = loader_calls[0].args[0]
+    assert isinstance(argument, ast.List), (
+        "the inputs must be a literal list, not a comprehension that can "
+        "filter every one of them away"
     )
-    consumers = [(called_name(node), node.lineno) for node in ast.walk(main_fn)
+    assert len(argument.elts) == 3, "all three phase inputs must be checked"
+    passed = {element.attr for element in argument.elts
+              if isinstance(element, ast.Attribute)
+              and isinstance(element.value, ast.Name)
+              and element.value.id == "args"}
+    assert passed == {"phase1", "phase3", "reference_phase1"}
+
+    # The loader's return is unpacked, and the unpacked names are what the
+    # corpus builder is given.
+    # ...and the refusal is acted on. `if problem:` -> `if False:` leaves the
+    # loader's verdict computed and ignored, which is a check in name only.
+    guards = [node for node in ast.walk(main_fn)
+              if isinstance(node, ast.If)
+              and isinstance(node.test, ast.Name)
+              and node.test.id == "problem"
+              and any(isinstance(inner, ast.Return)
+                      and getattr(inner.value, "value", 0) != 0
+                      for inner in ast.walk(node))]
+    assert guards, (
+        "the loader's `problem` must be tested and returned on, not computed "
+        "and discarded"
+    )
+
+    unpacked = [node for node in ast.walk(main_fn)
+                if isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Tuple)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "payloads"]
+    assert unpacked, "the loader's payloads must be unpacked, not discarded"
+    names = [element.id for element in unpacked[0].targets[0].elts]
+    assert names == ["phase1", "phase3", "reference_phase1"]
+
+    space_calls = [node for node in ast.walk(main_fn)
+                   if isinstance(node, ast.Call)
+                   and _call_name(node) == "load_corpus_space"]
+    assert len(space_calls) == 1
+    given = [element.id for element in space_calls[0].args
+             if isinstance(element, ast.Name)]
+    assert set(names) <= set(given), (
+        "load_corpus_space must receive the checked payloads, not the paths"
+    )
+    assert not [element for element in ast.walk(space_calls[0])
+                if isinstance(element, ast.Attribute)
+                and isinstance(element.value, ast.Name)
+                and element.value.id == "args"
+                and element.attr in {"phase1", "phase3", "reference_phase1"}], (
+        "a phase PATH reaching load_corpus_space means the file is read again"
+    )
+
+    consumers = [(_call_name(node), node.lineno) for node in ast.walk(main_fn)
                  if isinstance(node, ast.Call)
-                 and called_name(node) in _PHASE_CONSUMING_CALLS]
+                 and _call_name(node) in ("load_corpus_space", "evaluate_text",
+                                          "evaluation_to_dict")]
     assert consumers, "no phase-consuming call found in main()"
     first_name, first_line = min(consumers, key=lambda pair: pair[1])
-
-    assert stamp_line < first_line, (
-        f"the metric_schema check runs after {first_name}() has already used "
-        "the corpus"
+    assert loader_calls[0].lineno < first_line, (
+        f"the phase files are loaded after {first_name}() has already run"
     )
+
+
+def test_the_scorer_reads_no_phase_file_after_the_check():
+    """The only reader of these files is the checked loader.
+
+    ``load_corpus_space`` used to re-read all three with ``p5.load_json``,
+    so the stamp check ran over one set of bytes and the scoring over
+    another. The mutation this kills: restoring any ``load_json`` call in
+    this module.
+    """
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
+
+    assert "load_json" not in source
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-5 item L-b2 — one base moves the WHOLE experiment
+# ---------------------------------------------------------------------------
+
+#: Every script that names an experiment path, and the constant it uses.
+_ROOT_CONSTANTS = (
+    ("efficacy_build_judge_tasks.py", "JUDGE_DIR"),
+    ("efficacy_build_judge_tasks.py", "PRIVATE_DIR"),
+    ("efficacy_build_judge_tasks.py", "KEY_DIR"),
+    ("efficacy_build_prompts.py", "EXPERIMENT_DIR"),
+    ("efficacy_build_reference.py", "EXPERIMENT_DIR"),
+    ("efficacy_analyse.py", "DEFAULT_EXPERIMENT_DIR"),
+    ("efficacy_score.py", "DEFAULT_EXPERIMENT_DIR"),
+    ("efficacy_score_judges.py", "JUDGE_DIR_DEFAULT"),
+    ("efficacy_score_judges.py", "KEY_DIR_DEFAULT"),
+)
+
+#: The style_support helpers that derive a path from the shared base.
+_LAYOUT_HELPERS = {"experiment_root", "judge_dir", "private_dir",
+                   "judge_key_dir", "passages_dir"}
+
+
+def _module_constant_value(filename: str, name: str):
+    """Return the AST of the value assigned to a module-level constant."""
+    import ast
+
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / filename).read_text(encoding="utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", None) == name for target in node.targets):
+            return node.value
+    raise AssertionError(f"{filename} no longer defines {name}")
+
+
+def test_every_experiment_path_is_derived_not_spelled_out():
+    """Derivation, asserted structurally rather than by comparing values.
+
+    Comparing the constant with the helper's RESULT passes just as happily
+    when the constant is a literal that spells the same path — which is how
+    reverting three of these to their hard-coded strings survived (round
+    4g-6, M2). What has to hold is that each constant is *computed* from the
+    shared base, so repointing that base moves it. The mutation this kills:
+    replacing any of these with a literal path.
+    """
+    import ast
+
+    for filename, name in _ROOT_CONSTANTS:
+        value = _module_constant_value(filename, name)
+        calls = [node for node in ast.walk(value)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in _LAYOUT_HELPERS
+                 and getattr(node.func.value, "id", None) == "style_support"]
+        assert calls, (
+            f"{filename}:{name} does not derive from style_support's layout "
+            "helpers, so repointing the experiment root would not move it"
+        )
+
+
+def test_the_passages_directory_moves_with_the_base(monkeypatch, tmp_path):
+    """The path L-b2 found left behind: passages stayed in the old root."""
+    style_support = load_style_module("style_support")
+    monkeypatch.setattr(style_support, "EXPERIMENT_DEFAULT", tmp_path)
+
+    assert style_support.passages_dir() == tmp_path / "passages"
+    assert style_support.judge_dir() == tmp_path / "judge-tasks"
+    assert style_support.judge_key_dir() == tmp_path / "private" / "judge-key"

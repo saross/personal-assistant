@@ -114,9 +114,64 @@ def private_dir(root: Path | str | None = None) -> Path:
     return experiment_root(root) / "private"
 
 
+def passages_dir(root: Path | str | None = None) -> Path:
+    """The generated passages the judge tasks are built from."""
+    return experiment_root(root) / "passages"
+
+
 def judge_key_dir(root: Path | str | None = None) -> Path:
     """Where the unblinding key is written, and where it is read from."""
     return private_dir(root) / "judge-key"
+
+
+def load_checked_payloads(
+        paths: Sequence[Path | str | None],
+) -> tuple[list[dict | None] | None, str | None]:
+    """Load every phase file, refusing BEFORE returning any of them.
+
+    Returns ``(payloads, None)`` when every path exists, parses, and carries
+    the current metric-definition stamp, and ``(None, message)`` otherwise —
+    never a partial list. A caller that holds payloads therefore holds
+    checked ones, by construction.
+
+    A ``None`` entry is an input the caller did not ask for (an optional
+    reference file, say); it yields ``None`` in the same position, so callers
+    can hand over a fixed, literal list and unpack the result positionally.
+    That matters: building the list with a comprehension that filters is how
+    a one-word edit — ``if p is not None`` to ``if p is None`` — came to hand
+    the loader an empty list and skip every check with the suite green
+    (round 4g-6, C1).
+
+    This exists because the check's position was previously enforced only by
+    reading the source: an assertion that the stamp loop appears before the
+    first consuming call passes just as happily when the loop is hoisted into
+    a nested function called afterwards, wrapped in an environment-variable
+    condition, or given an empty iterable. None of those could be caught by
+    running the code either, because both consumers import numpy at module
+    scope and neither executes in this repository's virtual environment. The
+    sequence is a single stdlib-only call instead, so it is testable here on
+    its own terms, and a consumer cannot reach a payload around it.
+    """
+    payloads: list[dict | None] = []
+    for path in paths:
+        if path is None:
+            payloads.append(None)
+            continue
+        path = Path(path)
+        if not path.exists():
+            return None, f"Input not found: {path}"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"{path}: could not be read as JSON ({exc})"
+        if not isinstance(payload, dict):
+            return None, (f"{path}: expected a JSON object, found "
+                          f"{type(payload).__name__}")
+        stale = metric_schema_error(payload, path)
+        if stale:
+            return None, stale
+        payloads.append(payload)
+    return payloads, None
 
 
 def metric_schema_stamp() -> dict:
@@ -141,6 +196,17 @@ def metric_schema_error(payload: dict, source: Path | str) -> str | None:
     if found == METRIC_SCHEMA_VERSION:
         return None
     described = "absent" if found is None else repr(found)
+    if isinstance(found, int) and found > METRIC_SCHEMA_VERSION:
+        # The file is NEWER than this code. Telling the operator to re-run
+        # phase 1 would be exactly backwards: the results are current and the
+        # code reading them is behind (round 4g-6, low).
+        return (
+            f"{source}: metric_schema version is {found}, but this code "
+            f"understands version {METRIC_SCHEMA_VERSION}. The results are "
+            "NEWER than the code reading them, so this script does not know "
+            "what its metrics mean. Update the code (git pull) rather than "
+            "re-running phase 1."
+        )
     return (
         f"{source}: metric_schema version is {described}, but this code "
         f"requires version {METRIC_SCHEMA_VERSION}. The file was measured "
@@ -317,7 +383,7 @@ def provenance_block(script: str,
 
     Contains no wall-clock field, on purpose: see the module docstring.
 
-``script_path`` is the file whose repository state is recorded. It
+    ``script_path`` is the file whose repository state is recorded. It
     defaults to the CALLER's ``__file__``, because the commit that matters is
     the one containing the script that produced the output. This used to call
     ``git_state()`` with no argument, which always described *this* module —
@@ -330,8 +396,19 @@ def provenance_block(script: str,
     owns — silently replacing ``inputs`` or ``git_commit`` with a caller's
     value would make provenance say something the writer did not mean.
     """
-    state = git_state(script_path if script_path is not None
-                      else _calling_script())
+    hint = script_path if script_path is not None else _calling_script()
+    if hint is None:
+        # No ``__file__`` on the caller: exec'd source, ``python -c``, or an
+        # interactive session. Falling through to git_state()'s own default
+        # would describe THIS module and hand back a commit that says nothing
+        # about the code that ran — the very bug item L3 fixed, re-entered by
+        # the back door (round 4g-5, item L-c1).
+        state = {"commit": None, "dirty": None, "root": None,
+                 "reason": "the calling script has no __file__ (exec'd "
+                           "source, python -c, or an interactive session), "
+                           "so no repository state describes it"}
+    else:
+        state = git_state(hint)
     record: dict[str, Any] = {
         "script": script,
         "git_commit": state["commit"],
