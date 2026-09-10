@@ -2360,7 +2360,7 @@ loose ends tied up so work can return to the GPT integration.
   hermeticity audit hook) on its final narrow re-audit after round 4a-8
   fixed the hook to compare the real path (it had been watching the
   resolved store while every module writes through the `memories`
-  symlink). Thirty-six PRs from the audit; main suite about 4,650; the
+  symlink). Thirty-seven PRs from the audit (#155 merged after its narrow re-audit); main suite about 4,650; the
   report's "Closing summary" section is the final report. Seven audit
   worktrees removed; `claude-audit-round4a` remains for #155.
 - **Live matters.** R2 push: `CATALOG.json` (a derived index) excluded
