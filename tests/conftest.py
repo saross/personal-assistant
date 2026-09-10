@@ -47,7 +47,8 @@ defined; the one thing a reader needs up front is the environment switch:
     process and is invisible to it; a test that forgot to patch its
     path is named in advisory mode and fails the run under STRICT. It
     under-detects (a subprocess, or a C-level write, evades it) and
-    never over-detects, so it cannot fail a live checkout falsely.
+    never over-detects, so it cannot fail a live checkout falsely. It
+    costs about +1.6 % on a full run.
 
 """
 
@@ -394,9 +395,12 @@ _QUEUE_LEAK: list[str] = []
 # failure in a live checkout, which is the property that makes it safe to run
 # where other sessions are working.
 #
-# Measured cost: a full run with the hook installed took 179.5 s against a
-# 185.3 s baseline for the same tree without it — inside run-to-run noise on
-# a machine running other suites, so no detectable overhead.
+# Measured cost: +2.5 s on a full run (about +1.6 %) from PAIRED runs, and
+# about +0.5 µs per open (0.588 µs over 40 000 opens here; the re-auditor
+# measured 0.45 µs). An earlier note claimed "none detectable" — that came
+# from two unpaired runs on a loaded machine and was wrong (round 4a-8, L2).
+# The basename pre-filter is what keeps it to that: realpath() stats every
+# component and must never run on the hot path.
 # ---------------------------------------------------------------------------
 
 #: ``(nodeid, path)`` for every in-process write-open of a watched file.
@@ -405,6 +409,11 @@ _STORE_WRITE_OPENS: list[tuple[str, str]] = []
 #: Resolved canonical paths the audit hook watches. Empty when the store is
 #: not present (an archive export), which is also when the hook is not armed.
 _AUDITED_PATHS: set[str] = set()
+
+#: Their basenames, for the hook's first-pass reject. Comparing two short
+#: strings costs nothing; ``realpath`` stats every component, so it runs only
+#: once a name has already matched.
+_AUDITED_NAMES: set[str] = set()
 
 #: ``sys.addaudithook`` cannot be undone, so arm at most once per process.
 _AUDIT_ARMED: list[bool] = [False]
@@ -416,9 +425,23 @@ _WRITING_MODE_CHARS = frozenset("wax+")
 def _audit_path(raw: object) -> str | None:
     """The path an audit event carries, as a string, or ``None``.
 
-    ``Path.open`` hands the event a ``PosixPath``, not a ``str``, so a
-    naive ``isinstance(raw, str)`` test misses the commonest route
-    altogether — which is how the first prototype reported nothing.
+    Correcting the record (round 4a-8, finding M2): an earlier comment here
+    claimed ``Path.open`` hands the event a ``PosixPath`` and that this was
+    why the first prototype reported nothing. That is FALSE on Python
+    3.13.3 — ``_io.open`` fspath-converts before ``sys.audit``, so
+    ``Path.open``, ``Path.read_text`` and ``open(Path)`` all arrive here as
+    ``str``, and no route hands the event a ``PosixPath``.
+
+    The ``os.fspath`` call is kept as harmless defensiveness: it costs one
+    C-level type check on a path that has already passed the basename
+    filter, and it makes the function correct for any caller or future
+    interpreter that does pass a path-like object. The bytes branch is real
+    — ``open(b"/path")`` does carry bytes.
+
+    The prototype's actual failure was finding C1: it compared the raw
+    event string against the RESOLVED store path, and the repository
+    reaches the store through the ``memories`` symlink, so nothing ever
+    matched. The mode/flags gap fixed alongside it was real but secondary.
     """
     try:
         path = os.fspath(raw)  # type: ignore[arg-type]
@@ -457,10 +480,18 @@ def arm_store_write_audit() -> bool:
     if _AUDIT_ARMED[0]:
         return True
     _AUDITED_PATHS.clear()
+    _AUDITED_NAMES.clear()
     for candidate in _CANONICAL_FILES:
         try:
             if candidate.exists():
-                _AUDITED_PATHS.add(str(candidate.resolve()))
+                # The REAL path, because that is the one form every route
+                # into the file agrees on. ``memories`` is a symlink to
+                # ``data/memories``, and every production module opens the
+                # SYMLINK path (``PA_DIR / "memories" / "memories.jsonl"``),
+                # so comparing the raw string the event carries matched
+                # nothing at all (round 4a-8, finding C1).
+                _AUDITED_PATHS.add(os.path.realpath(candidate))
+                _AUDITED_NAMES.add(candidate.name)
         except OSError:  # pragma: no cover — unreadable path
             continue
     if not _AUDITED_PATHS:
@@ -472,13 +503,24 @@ def arm_store_write_audit() -> bool:
         if event != "open":
             return
         path = _audit_path(args[0])
-        if path is None or path not in _AUDITED_PATHS:
+        if path is None:
+            return
+        # Basename first: a string compare against two short names, which
+        # rejects essentially every open in the suite without touching the
+        # filesystem. Only then resolve — realpath() stats each component,
+        # so it must not be on the hot path.
+        if os.path.basename(path) not in _AUDITED_NAMES:
+            return
+        # realpath, not resolve(): it follows the symlink AND anchors a
+        # relative path against the cwd as it stands at event time.
+        real = os.path.realpath(path)
+        if real not in _AUDITED_PATHS:
             return
         mode = args[1] if len(args) > 1 else None
         flags = args[2] if len(args) > 2 else None
         if not _audit_is_writing(mode, flags):
             return
-        _STORE_WRITE_OPENS.append((str(_ACTIVE_TEST["nodeid"]), path))
+        _STORE_WRITE_OPENS.append((str(_ACTIVE_TEST["nodeid"]), real))
 
     sys.addaudithook(_hook)
     _AUDIT_ARMED[0] = True
@@ -611,6 +653,20 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "_DEFERRED_REPORT; the autouse isolation only covers function "
             "scope. The session has been failed.", red=True,
         )
+        # NB (round 4a-8, finding L1): the process exits 1, but the final
+        # ``-q`` line still reads e.g. "1 passed" in green. pytest builds
+        # that line from its own ``stats`` counters, not from
+        # ``session.exitstatus``, and the counters are fixed before this
+        # hook runs. Registering a stand-in report in ``stats["error"]``
+        # does change the line, but ``summary_stats`` then calls private
+        # reporter API on the entry (``_get_verbose_word_with_markup``),
+        # which couples this guard to pytest internals for a cosmetic gain.
+        # The line below is the compensation: it is red, it is last before
+        # the stats line, and it says what the exit code means.
+        terminalreporter.write_line(
+            "  EXIT STATUS 1 — read the exit code, not the green summary "
+            "line below it.", red=True,
+        )
     if coverage:
         terminalreporter.write_line(coverage, yellow=True)
     for path in report.get("source_changes", []):
@@ -630,9 +686,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"{line}", red=True,
         )
     if report.get("store_writes"):
+        advice = (
+            "and this run FAILED on it"
+            if hermeticity_is_strict()
+            else f"Set {STRICT_ENV_VAR}=1 to make it fatal"
+        )
         terminalreporter.write_line(
             "  The extraction hook writes from another process, so this was "
-            f"this one. Set {STRICT_ENV_VAR}=1 to make it fatal.", red=True,
+            f"this one. {advice}.", red=True,
         )
     for line in report.get("appends", []):
         terminalreporter.write_line(

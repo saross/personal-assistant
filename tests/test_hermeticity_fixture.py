@@ -3054,6 +3054,11 @@ def test_a_session_scoped_fixture_cannot_leak_into_the_summary(tmp_path):
     # And the wolf-cry must NOT appear: the leaked entry is dropped, so the
     # summary cannot report it as a real source change.
     assert "the checkout's source trees changed" not in combined
+    # The exit code is 1, but pytest's own stats line still reads green,
+    # because it is built before this hook runs (round 4a-8, finding L1).
+    # The compensating line has to be there, or the run looks like a pass.
+    assert "EXIT STATUS 1" in combined, (
+        "nothing in the output says the run failed")
 
 
 def test_the_net_leaves_a_real_source_change_alone(tmp_path):
@@ -3204,11 +3209,21 @@ def test_which_open_events_count_as_writing(mode, flags, writing):
 
 
 def test_the_audit_path_helper_accepts_what_the_event_carries(tmp_path):
-    """``Path.open`` hands the event a PosixPath, not a str.
+    """Every shape the event can carry becomes a string.
 
-    That is the commonest route into the store, and an ``isinstance(raw,
-    str)`` test misses it — which is why the first prototype reported
-    nothing. Kills a mutation that drops ``os.fspath``.
+    Correcting the record (round 4a-8, M2): an earlier version of this
+    docstring said ``Path.open`` hands the event a ``PosixPath`` and that
+    this was why the first prototype found nothing. Both halves were wrong.
+    On Python 3.13.3 ``_io.open`` fspath-converts before ``sys.audit``, so
+    ``Path.open``, ``Path.read_text`` and ``open(Path)`` all arrive as
+    ``str`` — the assertion below passes a ``Path`` directly to the helper,
+    which is not a route the interpreter takes. ``os.fspath`` is kept as
+    harmless defensiveness, and the bytes branch IS reachable via
+    ``open(b"/path")``.
+
+    The prototype's real failure was C1: it compared the raw event string
+    against the RESOLVED store path while the repository writes through the
+    ``memories`` symlink, so nothing matched.
     """
     target = tmp_path / "memories.jsonl"
     assert conftest._audit_path(target) == str(target)
@@ -3333,3 +3348,218 @@ def test_a_read_of_the_store_is_not_reported(tmp_path):
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined[-2500:]
     assert "opened the real canonical store for writing" not in combined
+
+
+# ===========================================================================
+# The audit hook must match the path form the REPOSITORY uses (round 4a-8, C1)
+#
+# ``memories`` is a symlink to ``data/memories``, and every production module
+# opens the SYMLINK path (sync-to-postgres.py, drift-sweep.py,
+# fetch-memories.py, sync-to-zotero.py, sync_memory_edit.py all build
+# ``PA_DIR / "memories" / "memories.jsonl"``). The hook stored the RESOLVED
+# path and compared the raw event string, so it never fired on the one form
+# the repository actually writes through — and the whole suite stayed green,
+# because the nested store was a plain directory with no symlink in it.
+# ===========================================================================
+
+#: A nested store reached THROUGH a symlink, exactly as the repository is
+#: laid out: the real files under ``data/memories``, and ``memories`` a
+#: symlink to it. ``_CANONICAL_FILES`` name the SYMLINK path, as conftest's
+#: own do.
+_NESTED_SYMLINKED_STORE = "\n".join([
+    "",
+    "_REAL = Path(__file__).resolve().parent / 'data' / 'memories'",
+    "_REAL.mkdir(parents=True, exist_ok=True)",
+    "_LOGS = Path(__file__).resolve().parent / 'data' / 'logs'",
+    "_LOGS.mkdir(parents=True, exist_ok=True)",
+    "(_REAL / 'memories.jsonl').write_text(",
+    "    '{\"id\": \"2031-01-01-aaaabbbbcccc\", \"content\": \"seed\", '",
+    "    '\"created_at\": \"2031-01-01T00:00:00+00:00\"}\\n', encoding='utf-8')",
+    "(_REAL / 'tag-vocabulary.txt').write_text('kiln\\n', encoding='utf-8')",
+    "_LINK = Path(__file__).resolve().parent / 'memories'",
+    "if not _LINK.exists():",
+    "    _LINK.symlink_to(_REAL)",
+    "_CANONICAL_FILES = (",
+    "    _LINK / 'memories.jsonl', _LINK / 'tag-vocabulary.txt')",
+    "_APPEND_TOLERANT_DIRS = (_LOGS,)",
+    "_CANONICAL_DIRS = (_LOGS,)",
+    "",
+])
+
+#: Appends through the SYMLINK path — what every production module does.
+_NESTED_SYMLINK_APPEND = "\n".join([
+    "import json",
+    "from pathlib import Path",
+    "",
+    "",
+    "def test_writes_through_the_symlink_path():",
+    "    corpus = Path(__file__).resolve().parent / 'memories' / 'memories.jsonl'",
+    "    with corpus.open('a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-10-aaaa11112222',",
+    "            'content': 'appended through the symlink path',",
+    "            'created_at': '2031-09-10T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+#: Appends through a RELATIVE path after chdir — resolved against the cwd as
+#: it stands when the event fires, not when the hook was armed.
+_NESTED_RELATIVE_APPEND = "\n".join([
+    "import json",
+    "import os",
+    "from pathlib import Path",
+    "",
+    "",
+    "def test_writes_through_a_relative_path(monkeypatch):",
+    "    root = Path(__file__).resolve().parent",
+    "    monkeypatch.chdir(root / 'memories')",
+    "    with open('memories.jsonl', 'a', encoding='utf-8') as fh:",
+    "        fh.write(json.dumps({",
+    "            'id': '2031-09-10-bbbb33334444',",
+    "            'content': 'appended through a relative path',",
+    "            'created_at': '2031-09-10T00:00:00+00:00'}) + '\\n')",
+    "    assert True",
+    "",
+])
+
+
+def test_a_write_through_the_symlink_path_is_caught(tmp_path):
+    """The form every production module uses must be caught.
+
+    Kills the mutation ``os.path.realpath(path)`` -> the raw event string
+    (equivalently, storing ``str(candidate)`` instead of the real path):
+    with the store reached through a symlink, the hook saw
+    ``…/memories/memories.jsonl`` and the set held
+    ``…/data/memories/memories.jsonl``, so it never fired.
+    """
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE,
+                         _NESTED_SYMLINK_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_writes_through_the_symlink_path" in combined
+
+
+def test_a_write_through_a_relative_path_is_caught(tmp_path):
+    """A relative open after chdir resolves against the cwd at event time.
+
+    Kills the mutation that drops ``realpath`` in favour of a plain string
+    comparison: ``open("memories.jsonl")`` carries no directory at all.
+    """
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE,
+                         _NESTED_RELATIVE_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "opened the REAL canonical store for writing" in combined
+    assert "test_writes_through_a_relative_path" in combined
+
+
+def test_a_symlinked_store_read_is_still_not_reported(tmp_path):
+    """Reading through the symlink must stay silent.
+
+    Kills a mutation that reports every open once the path forms match.
+    """
+    body = "\n".join([
+        "from pathlib import Path",
+        "",
+        "",
+        "def test_reads_through_the_symlink():",
+        "    corpus = (Path(__file__).resolve().parent / 'memories'",
+        "              / 'memories.jsonl')",
+        "    assert corpus.read_text(encoding='utf-8')",
+        "",
+    ])
+    result = _run_nested(tmp_path, _NESTED_SYMLINKED_STORE, body,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert "opened the real canonical store for writing" not in combined
+
+
+def test_the_basename_filter_rejects_before_resolving(tmp_path, monkeypatch):
+    """The hot path must not call realpath on every open in the suite.
+
+    ``realpath`` stats each component, and the suite opens tens of
+    thousands of files. Kills a mutation that drops the basename pre-filter
+    (or reorders it after the resolve).
+    """
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    corpus = tmp_path / "data" / "memories" / "memories.jsonl"
+    corpus.parent.mkdir(parents=True)
+    corpus.write_text("", encoding="utf-8")
+    link = tmp_path / "memories"
+    link.symlink_to(corpus.parent)
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        (link / "memories.jsonl",))
+    installed = []
+    monkeypatch.setattr(sys, "addaudithook", lambda hook: installed.append(hook))
+    assert conftest.arm_store_write_audit() is True
+    hook = installed[0]
+
+    resolved = []
+    real_realpath = os.path.realpath
+    monkeypatch.setattr(
+        os.path, "realpath",
+        lambda p, **kw: (resolved.append(str(p)), real_realpath(p, **kw))[1])
+    monkeypatch.setattr(conftest, "_STORE_WRITE_OPENS", [])
+
+    hook("open", (str(tmp_path / "unrelated.txt"), "w", None))
+    assert resolved == [], "realpath ran on a path the basename filter should reject"
+
+    hook("open", (str(link / "memories.jsonl"), "a", None))
+    assert resolved, "the matching name was never resolved"
+    assert conftest._STORE_WRITE_OPENS, "the symlink path was not recorded"
+    assert conftest._STORE_WRITE_OPENS[0][1] == str(corpus.resolve())
+
+
+def test_the_watched_names_are_the_store_basenames(tmp_path, monkeypatch):
+    """Arming records both the real paths and their names."""
+    monkeypatch.setattr(conftest, "_AUDIT_ARMED", [False])
+    store = tmp_path / "memories"
+    store.mkdir()
+    for name in ("memories.jsonl", "tag-vocabulary.txt"):
+        (store / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_CANONICAL_FILES",
+                        tuple(store / n for n in
+                              ("memories.jsonl", "tag-vocabulary.txt")))
+    monkeypatch.setattr(sys, "addaudithook", lambda hook: None)
+
+    assert conftest.arm_store_write_audit() is True
+    assert conftest._AUDITED_NAMES == {"memories.jsonl", "tag-vocabulary.txt"}
+    assert conftest._AUDITED_PATHS == {
+        str((store / "memories.jsonl").resolve()),
+        str((store / "tag-vocabulary.txt").resolve()),
+    }
+
+
+def test_the_store_write_advice_does_not_repeat_a_set_variable(tmp_path):
+    """Under STRICT the note must not tell the operator to set STRICT.
+
+    The `tolerated` block branched on the mode; this one printed "Set
+    PA_HERMETICITY_STRICT=1 to make it fatal" even when it already was, on
+    a run that had just failed because of it (round 4a-8, finding M1).
+    Kills the mutation that drops the branch.
+    """
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND,
+                         {conftest.STRICT_ENV_VAR: "1"})
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined[-2500:]
+    assert "and this run FAILED on it" in combined
+    assert f"Set {conftest.STRICT_ENV_VAR}=1 to make it fatal" not in combined
+
+
+def test_the_store_write_advice_names_the_switch_in_advisory_mode(tmp_path):
+    """And in advisory mode it must still say how to make it fatal."""
+    result = _run_nested(tmp_path, _NESTED_POPULATED_STORE, _NESTED_M1_APPEND)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined[-2500:]
+    assert f"Set {conftest.STRICT_ENV_VAR}=1 to make it fatal" in combined
+    assert "and this run FAILED on it" not in combined

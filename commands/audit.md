@@ -195,8 +195,13 @@ What that leaves: the audit hook under-detects, never over-detects. A write
 from a subprocess the test spawned, or from C code that bypasses Python's
 `open`, is missed. It cannot produce a false failure in a live checkout,
 which is what makes it safe to leave armed where other sessions are working.
-Measured cost on a full run: none detectable (179.5 s with it against a
-185.3 s baseline for the same tree, inside run-to-run noise).
+
+Measured cost: **+2.5 s on a full run, about +1.6 %**, from paired runs — and
+about **+0.5 µs per `open`** (0.588 µs measured over 40 000 opens on this
+machine; the re-auditor measured 0.45 µs). An earlier note here claimed "none
+detectable"; that came from two unpaired runs on a machine running other
+suites, where the difference was buried in noise. The cost is small, but it is
+real and it is proportional to how many files the suite opens.
 
 What the snapshot half still catches on its own: a rewrite, a shrink, a
 deletion, appended text that is not a well-formed record or a bare tag, and a
