@@ -2405,8 +2405,13 @@ loose ends tied up so work can return to the GPT integration.
   reading hook now rejects duplicate, near-miss, truncated, and
   control-character header blocks and gates delivery on all three
   fields. Astra's follow-up gpt-hub PR #6 (aa5e950; stdin bound, git
-  timeouts, altered names, invalid count, output cap) is under my
-  independent review; Shawn holds it until the verdict.
+  timeouts, altered names, invalid count, output cap) reviewed: verdict
+  merge — all three follow-ups closed and mutation-killed, the two
+  parsers agree on 17 differential header cases byte for byte; four
+  follow-ups (the hold instruction printed last, so a character-unit
+  context limit would truncate exactly the guard; MAX_LISTED unpinned;
+  trailing bytes after the payload; record currency and the portable
+  test claim). Verdict mailed; "#6 is yours to merge" to Shawn.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
