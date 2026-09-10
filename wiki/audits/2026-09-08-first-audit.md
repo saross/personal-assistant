@@ -1325,7 +1325,19 @@ Open, each with its verdict so far:
   decoration missing `mkstemp`, a collapsed exception type, a duplicate
   diagnostic, an unguarded `build_custom_id`, and a mis-scoped help
   slice are round 4e-9 (`claude/audit-round4e-9`), the last on this
-  branch for the cycle.
+  branch for the cycle. Round 4e-9 delivered (9fa7533-4481e9b): a
+  sessionless supplied manifest falls back like an unreadable one,
+  naming both; a two-request fixture with the fault in the second id;
+  the fsync target stat'ed while open (the closed temp fd's number is
+  reused, which silently overwrote the agent's first attempt); the
+  session-id check before the cost gate with exit 2; `mkdir`/`mkstemp`
+  inside the decorated block; the same exception class re-raised with
+  errno intact and the path in `strerror`; the malformed-path
+  diagnostic reported once by parameter (a state-dict marker was
+  rejected as a leak); `assemble_requests` validates first;
+  `known_session_ids` removed; the help slice scoped within the options
+  section. Merged with main (a163fcb); coordinator suite, PR, and
+  re-audit pending.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
