@@ -21,6 +21,7 @@ import importlib.util
 import json
 import shlex
 import socket
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -3268,12 +3269,19 @@ class TestAtomicWriteDurability:
         import os as os_module
 
         fsynced: list = []
+        # Keyed by CALL, not by descriptor number: the temp file's fd is
+        # closed before the directory is opened, so the OS reuses the
+        # number and a dict keyed on it records only the second stat.
+        stat_by_call: list = []
         real_fsync = os_module.fsync
         real_replace = os_module.replace
         renamed: list = []
 
         def recording_fsync(fd):
+            # Record while the descriptor is still open, so a test can stat
+            # it: after the with-block closes, the number means nothing.
             fsynced.append(fd)
+            stat_by_call.append(os_module.fstat(fd))
             return real_fsync(fd)
 
         def recording_replace(src, dst):
@@ -3282,11 +3290,18 @@ class TestAtomicWriteDurability:
 
         monkeypatch.setattr(os_module, "fsync", recording_fsync)
         monkeypatch.setattr(os_module, "replace", recording_replace)
-        bom.write_json_atomic(tmp_path / "responses" / "session.json", {"ok": True})
+        target = tmp_path / "responses" / "session.json"
+        bom.write_json_atomic(target, {"ok": True})
         # One fsync on the temp file before the rename, one on the directory
         # after it.
         assert renamed == [1]
         assert len(fsynced) == 2
+        # And the second target really is the parent DIRECTORY: counting
+        # calls alone let _fsync_directory(path) pass for
+        # _fsync_directory(path.parent).
+        assert stat.S_ISDIR(stat_by_call[1].st_mode)
+        assert stat_by_call[1].st_ino == target.parent.stat().st_ino
+        assert not stat.S_ISDIR(stat_by_call[0].st_mode)
 
     def test_a_refused_directory_fsync_is_not_an_error(self, tmp_path, monkeypatch):
         """Some network mounts refuse it; the write has already succeeded."""
@@ -3307,10 +3322,11 @@ class TestAtomicWriteDurability:
 
     def test_a_write_failure_names_the_file(self, tmp_path, monkeypatch):
         """In a loop over a batch, "No space left" alone is not actionable."""
+        import errno as errno_module
         import os as os_module
 
         def refuse_replace(_src, _dst):
-            raise OSError("No space left on device")
+            raise OSError(errno_module.ENOSPC, "No space left on device")
 
         monkeypatch.setattr(os_module, "replace", refuse_replace)
         target = tmp_path / "responses" / "session-42.json"
@@ -3318,7 +3334,63 @@ class TestAtomicWriteDurability:
             bom.write_json_atomic(target, {"ok": True})
         assert str(target) in str(excinfo.value)
         assert "No space left on device" in str(excinfo.value)
+        assert excinfo.value.errno == errno_module.ENOSPC
         assert list(target.parent.iterdir()) == []
+
+    def test_the_exception_type_and_errno_survive(self, tmp_path, monkeypatch):
+        """Collapsing every failure into OSError loses what callers act on.
+
+        A caller distinguishing FileNotFoundError from PermissionError, or
+        reading errno, must still be able to; only the message gains the
+        path.
+        """
+        import errno as errno_module
+        import os as os_module
+
+        def refuse_replace(_src, _dst):
+            raise FileNotFoundError(errno_module.ENOENT, "No such file or directory")
+
+        monkeypatch.setattr(os_module, "replace", refuse_replace)
+        target = tmp_path / "responses" / "session-7.json"
+        with pytest.raises(FileNotFoundError) as excinfo:
+            bom.write_json_atomic(target, {"ok": True})
+        assert excinfo.value.errno == errno_module.ENOENT
+        assert str(target) in str(excinfo.value)
+
+    def test_a_failure_creating_the_temp_file_names_the_target(
+        self, tmp_path, monkeypatch
+    ):
+        """mkstemp and mkdir sat outside the decorated block.
+
+        They are the likeliest places for a full disk to bite, and their
+        failure said nothing about which file was being written.
+        """
+        import errno as errno_module
+        import tempfile as tempfile_module
+
+        def refuse_mkstemp(*args, **kwargs):
+            raise OSError(errno_module.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(tempfile_module, "mkstemp", refuse_mkstemp)
+        target = tmp_path / "responses" / "session-9.json"
+        with pytest.raises(OSError) as excinfo:
+            bom.write_json_atomic(target, {"ok": True})
+        assert str(target) in str(excinfo.value)
+        assert excinfo.value.errno == errno_module.ENOSPC
+
+    def test_a_failure_creating_the_directory_names_the_target(
+        self, tmp_path, monkeypatch
+    ):
+        import errno as errno_module
+
+        def refuse_mkdir(self, *args, **kwargs):
+            raise PermissionError(errno_module.EACCES, "Permission denied")
+
+        monkeypatch.setattr(Path, "mkdir", refuse_mkdir)
+        target = tmp_path / "responses" / "session-11.json"
+        with pytest.raises(PermissionError) as excinfo:
+            bom.write_json_atomic(target, {"ok": True})
+        assert str(target) in str(excinfo.value)
 
     def test_a_non_oserror_is_not_relabelled(self, tmp_path, monkeypatch):
         """A KeyboardInterrupt is not a write failure."""

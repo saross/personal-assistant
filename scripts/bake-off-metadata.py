@@ -588,17 +588,23 @@ def _atomic_write(path: Path, text: str) -> None:
     or the whole new one — never a half-written response.
 
     Raises:
-        OSError: the write, the flush, or the rename failed. The message
-            names the file: this is called in a loop over a batch's
-            responses, and an unadorned "No space left on device" leaves the
-            operator without the one fact they need — which response is
-            missing.
+        OSError: the directory could not be made, the temp file could not be
+            created, or the write, flush, or rename failed. The exception
+            keeps its original type and errno and gains the target path:
+            this is called in a loop over a batch's responses, and an
+            unadorned "No space left on device" leaves the operator without
+            the one fact they need — which response is missing.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle_fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
+    handle_fd: int | None = None
+    tmp_name: str | None = None
     try:
+        # Inside the try: mkdir and mkstemp are the likeliest places for a
+        # full disk to bite, and they were the two lines whose failure said
+        # nothing about which file was being written.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle_fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             # Flush to the device before the rename. os.replace is atomic
@@ -609,13 +615,22 @@ def _atomic_write(path: Path, text: str) -> None:
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except OSError as exc:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise OSError(f"could not write {path}: {exc}") from exc
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+        # Re-raise the SAME class with errno intact, rather than collapsing
+        # every failure into a bare OSError: a caller distinguishing
+        # FileNotFoundError from PermissionError, or reading errno, must
+        # still be able to. The path goes into strerror, so the type and
+        # the code survive and the message still names the file.
+        raise type(exc)(
+            exc.errno, f"{exc.strerror}: while writing {path}"
+        ) from exc
     except BaseException:
         # Anything else (a KeyboardInterrupt, a caller's TypeError from
         # serialisation) is not a write failure: clean up the temp file and
         # let it through unchanged rather than relabelling it.
-        Path(tmp_name).unlink(missing_ok=True)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
         raise
     # After the rename, not before: it is the directory entry that needs
     # flushing, and only once the entry exists.
