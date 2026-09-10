@@ -2398,7 +2398,15 @@ loose ends tied up so work can return to the GPT integration.
   (duplicate header, VT/U+2028 splitting, a late Lane beyond the 4 KiB
   window, chars vs bytes), all repaired in #157 (b2ead61; suite 4672).
   Verdict mailed (…pr5-review-verdict). Rule adopted: say "hold #N" or
-  "#N is yours to merge" explicitly.
+  "#N is yours to merge" explicitly. Astra then held #157 twice with
+  reproductions (three parser boundaries; then a near-miss detection
+  regression my own fix had introduced), each fixed within minutes, and
+  approved at 1c33c77; **#157 merged f632b3c** (suite 4684) — the live
+  reading hook now rejects duplicate, near-miss, truncated, and
+  control-character header blocks and gates delivery on all three
+  fields. Astra's follow-up gpt-hub PR #6 (aa5e950; stdin bound, git
+  timeouts, altered names, invalid count, output cap) is under my
+  independent review; Shawn holds it until the verdict.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
