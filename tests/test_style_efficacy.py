@@ -411,18 +411,20 @@ def _call_name(call) -> str | None:
 
 
 def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
-    """One call, before anything reads a corpus, covering all three inputs.
+    """One call, a literal list, and the payloads FED to the consumer.
 
     ``load_checked_payloads`` refuses before returning any payload — tested
-    directly, without numpy, in ``tests/test_style_support.py`` — so what
-    matters here is that ``main`` obtains its phase files from it, passes
-    every one of them, and does so before ``load_corpus_space`` builds the
-    feature space, fits the model, and computes the envelope.
+    directly, without numpy, in ``tests/test_style_support.py``. What this
+    asserts is that ``main`` cannot route around it: the list it hands over
+    is a non-empty literal naming all three inputs (a filtering comprehension
+    is how ``if p is not None`` became ``if p is None`` and handed the loader
+    an empty list), the result is unpacked, and those unpacked names are what
+    ``load_corpus_space`` receives — so no file is read again after the
+    check.
 
-    The mutation this kills: reverting to the hand-rolled loop, whose
-    ordering could only be asserted by reading the source and whose guard
-    ``if candidate is None or candidate.exists(): continue`` — one word
-    changed — skipped every file that existed with all 24 tests green.
+    The mutations this kills: emptying or filtering the list; `if problem:` →
+    `if False:`; and passing ``args.phase1``-style PATHS to
+    ``load_corpus_space`` again, which is the check-then-reload this replaces.
     """
     import ast
 
@@ -432,13 +434,59 @@ def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
                     and _call_name(node) == "load_checked_payloads"]
 
     assert len(loader_calls) == 1
-
-    # Every phase input this script reads must be in the list it hands over.
-    passed = {element.attr for element in ast.walk(loader_calls[0])
+    argument = loader_calls[0].args[0]
+    assert isinstance(argument, ast.List), (
+        "the inputs must be a literal list, not a comprehension that can "
+        "filter every one of them away"
+    )
+    assert len(argument.elts) == 3, "all three phase inputs must be checked"
+    passed = {element.attr for element in argument.elts
               if isinstance(element, ast.Attribute)
               and isinstance(element.value, ast.Name)
               and element.value.id == "args"}
-    assert {"phase1", "phase3", "reference_phase1"} <= passed
+    assert passed == {"phase1", "phase3", "reference_phase1"}
+
+    # The loader's return is unpacked, and the unpacked names are what the
+    # corpus builder is given.
+    # ...and the refusal is acted on. `if problem:` -> `if False:` leaves the
+    # loader's verdict computed and ignored, which is a check in name only.
+    guards = [node for node in ast.walk(main_fn)
+              if isinstance(node, ast.If)
+              and isinstance(node.test, ast.Name)
+              and node.test.id == "problem"
+              and any(isinstance(inner, ast.Return)
+                      and getattr(inner.value, "value", 0) != 0
+                      for inner in ast.walk(node))]
+    assert guards, (
+        "the loader's `problem` must be tested and returned on, not computed "
+        "and discarded"
+    )
+
+    unpacked = [node for node in ast.walk(main_fn)
+                if isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Tuple)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "payloads"]
+    assert unpacked, "the loader's payloads must be unpacked, not discarded"
+    names = [element.id for element in unpacked[0].targets[0].elts]
+    assert names == ["phase1", "phase3", "reference_phase1"]
+
+    space_calls = [node for node in ast.walk(main_fn)
+                   if isinstance(node, ast.Call)
+                   and _call_name(node) == "load_corpus_space"]
+    assert len(space_calls) == 1
+    given = [element.id for element in space_calls[0].args
+             if isinstance(element, ast.Name)]
+    assert set(names) <= set(given), (
+        "load_corpus_space must receive the checked payloads, not the paths"
+    )
+    assert not [element for element in ast.walk(space_calls[0])
+                if isinstance(element, ast.Attribute)
+                and isinstance(element.value, ast.Name)
+                and element.value.id == "args"
+                and element.attr in {"phase1", "phase3", "reference_phase1"}], (
+        "a phase PATH reaching load_corpus_space means the file is read again"
+    )
 
     consumers = [(_call_name(node), node.lineno) for node in ast.walk(main_fn)
                  if isinstance(node, ast.Call)
@@ -449,6 +497,21 @@ def test_the_scorer_loads_every_phase_input_through_the_checked_loader():
     assert loader_calls[0].lineno < first_line, (
         f"the phase files are loaded after {first_name}() has already run"
     )
+
+
+def test_the_scorer_reads_no_phase_file_after_the_check():
+    """The only reader of these files is the checked loader.
+
+    ``load_corpus_space`` used to re-read all three with ``p5.load_json``,
+    so the stamp check ran over one set of bytes and the scoring over
+    another. The mutation this kills: restoring any ``load_json`` call in
+    this module.
+    """
+    from style_test_helpers import SCRIPTS_DIR
+
+    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
+
+    assert "load_json" not in source
 
 
 # ---------------------------------------------------------------------------

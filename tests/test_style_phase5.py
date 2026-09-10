@@ -922,6 +922,28 @@ def test_main_loads_its_phase_files_through_the_checked_loader():
 
     assert len(loader_calls) == 1, "main must load its phase files exactly once"
 
+    # WHICH inputs, not just how many: `[args.phase1, args.phase3]` ->
+    # `[args.phase1, args.phase1]` left phase 3 unchecked and the suite green
+    # (round 4g-6, M1). The list is a literal for the same reason as in
+    # efficacy_score: a comprehension can filter every element away.
+    argument = loader_calls[0].args[0]
+    assert isinstance(argument, ast.List), "the inputs must be a literal list"
+    passed = {element.attr for element in argument.elts
+              if isinstance(element, ast.Attribute)
+              and isinstance(element.value, ast.Name)
+              and element.value.id == "args"}
+    assert passed == {"phase1", "phase3"}
+
+    # And the refusal is acted on rather than computed and discarded.
+    guards = [node for node in ast.walk(main_fn)
+              if isinstance(node, ast.If)
+              and isinstance(node.test, ast.Name)
+              and node.test.id == "problem"
+              and any(isinstance(inner, ast.Return)
+                      and getattr(inner.value, "value", 0) != 0
+                      for inner in ast.walk(node))]
+    assert guards, "the loader's `problem` must be tested and returned on"
+
     consumers = [(_called_name(node), node.lineno) for node in ast.walk(main_fn)
                  if isinstance(node, ast.Call)
                  and _called_name(node) in _PHASE_CONSUMING_CALLS]
