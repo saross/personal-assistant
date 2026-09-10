@@ -2377,6 +2377,16 @@ loose ends tied up so work can return to the GPT integration.
   one failure; the failure was the live extraction hook appending to the
   store during a whole-checkout snapshot test (a flake in the live
   checkout only, deferred fix); merges now read the suite line first.
+- **Sol integration resumed (afternoon).** Shawn merged gpt-hub #1
+  (fd3a21b), #2 (d917d6e), #3 (072c020) — the stacked composer,
+  Git-lane grants, and acceptance harness, all approved by Claude by
+  mail; #1 had sat as a draft since 7 Sep. Decisions D1 (chunking
+  approved), D2 (allow-list), D4 (keep), D5 (leave) recorded; D9
+  re-baselined; D6 support ticket filed. Mail to Astra
+  (20260910T064720Z…gpt-hub-merged-d4-decided) reports the merges and
+  D4, and restates the two unanswered requests (PR #113 re-review; the
+  slug-rule mirror). Astra's seen/ shows the 8 Sep messages after 01:02Z
+  unread; Sol's side idle since 8 Sep 01:24Z — Shawn to start it.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
