@@ -3126,8 +3126,28 @@ class TestSessionIdsAreValidatedOnce:
         with pytest.raises(bom.SessionIdError, match="whitespace"):
             bom.validate_session_id(padded, where="test")
 
-    def test_submit_refuses_a_blank_id_before_paying(self, tmp_path, monkeypatch):
-        """The finding: a "   " manifest submitted fine and was unrepairable."""
+    @staticmethod
+    def _request(session_id: str):
+        """A SessionRequest built directly, bypassing assemble_requests.
+
+        assemble_requests now refuses an unusable id itself, so reaching
+        haiku_submit's own check needs a request that did not come through
+        it. That check is the backstop for any other caller, and it is the
+        last thing standing between a bad id and a billed batch.
+        """
+        return bom.SessionRequest(
+            session_id=session_id,
+            project="thornhollow-survey",
+            bin="short",
+            content_tokens=1200,
+            transcript_text="invented transcript text",
+            user_message="invented user message",
+            custom_id=f"sess-{abs(hash(session_id)) % 10**8}",
+        )
+
+    @pytest.fixture
+    def submit_recorder(self, monkeypatch):
+        """Fake anthropic whose batches.create records every submission."""
         created: list = []
 
         class FakeBatches:
@@ -3144,55 +3164,80 @@ class TestSessionIdsAreValidatedOnce:
             )},
         )
         monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+        return created
 
-        transcript = fx.write_session_transcript(
-            tmp_path / "transcripts" / "blank.jsonl", n_records=6
-        )
-        manifest = fx.write_manifest(
-            tmp_path / "manifest.json", [fx.manifest_row("   ", transcript)]
-        )
-        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+    @pytest.mark.parametrize("bad_id", ["   ", " padded ", "padded "])
+    def test_submit_refuses_a_bad_id_before_paying(
+        self, tmp_path, submit_recorder, bad_id
+    ):
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
         out_dir = tmp_path / "haiku"
         out_dir.mkdir()
         with pytest.raises(bom.SessionIdError):
             bom.haiku_submit(
-                requests, out_dir, "system prompt", manifest_path=manifest
+                [self._request(bad_id)], out_dir, "system prompt",
+                manifest_path=manifest,
             )
-        assert created == []
+        assert submit_recorder == []
         assert not (out_dir / "batch-state.json").exists()
 
-    def test_submit_refuses_a_padded_id_before_paying(self, tmp_path, monkeypatch):
-        created: list = []
+    def test_submit_checks_every_session_not_just_the_first(
+        self, tmp_path, submit_recorder
+    ):
+        """The finding: a sample of one would bill a manifest of many.
 
-        class FakeBatches:
-            def create(self, requests):
-                created.append(requests)
-                return type("Batch", (), {"id": "batch_001"})()
-
-        fake_module = type(sys)("anthropic")
-        fake_module.Anthropic = type(
-            "FakeAnthropic", (),
-            {"__init__": lambda self, *a, **k: setattr(
-                self, "messages",
-                type("Messages", (), {"batches": FakeBatches()})(),
-            )},
-        )
-        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
-
-        transcript = fx.write_session_transcript(
-            tmp_path / "transcripts" / "padded.jsonl", n_records=6
-        )
-        manifest = fx.write_manifest(
-            tmp_path / "manifest.json", [fx.manifest_row(" padded ", transcript)]
-        )
-        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        Both earlier tests used single-session manifests, so truncating the
+        validation loop to requests[:1] passed. A real manifest whose
+        SECOND session carried a padded id would have been submitted.
+        """
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [])
         out_dir = tmp_path / "haiku"
         out_dir.mkdir()
-        with pytest.raises(bom.SessionIdError, match="whitespace"):
+        requests = [self._request("first-is-fine"), self._request(" second-is-not ")]
+        with pytest.raises(bom.SessionIdError, match="session 2"):
             bom.haiku_submit(
                 requests, out_dir, "system prompt", manifest_path=manifest
             )
-        assert created == []
+        assert submit_recorder == []
+        assert not (out_dir / "batch-state.json").exists()
+
+    def test_assemble_requests_refuses_before_deriving_anything(self, tmp_path):
+        """A list session_id used to die in build_custom_id, frames away."""
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "listy.jsonl", n_records=6
+        )
+        row = fx.manifest_row("placeholder", transcript)
+        row["session_id"] = ["not", "a", "string"]
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [row])
+        with pytest.raises(bom.SessionIdError, match="list"):
+            bom.assemble_requests(manifest, _prompt_file(tmp_path))
+
+    @pytest.mark.parametrize("bad_id", ["   ", " padded ", ["a"], 17])
+    def test_the_entry_point_refuses_before_the_cost_gate(
+        self, tmp_path, capsys, monkeypatch, bad_id
+    ):
+        """Exit 2 with a message, not "Proceeding." and a traceback."""
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "gate.jsonl", n_records=6
+        )
+        row = fx.manifest_row("placeholder", transcript)
+        row["session_id"] = bad_id
+        manifest = fx.write_manifest(tmp_path / "manifest.json", [row])
+
+        def refuse_input(_prompt=""):
+            raise AssertionError("a bad manifest must not reach the cost gate")
+
+        monkeypatch.setattr("builtins.input", refuse_input)
+        assert bom.main([
+            "--provider", "haiku",
+            "--manifest", str(manifest),
+            "--prompt", str(_prompt_file(tmp_path)),
+            "--out-dir", str(tmp_path / "out"),
+            "--yes",
+        ]) == 2
+        captured = capsys.readouterr()
+        assert "cannot be used" in captured.err
+        assert "API Call Review Gate" not in captured.out
 
     @pytest.mark.parametrize("session_id", ["   ", " padded ", "padded "])
     def test_rebuild_refuses_the_same_ids(self, tmp_path, session_id):

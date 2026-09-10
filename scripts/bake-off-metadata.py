@@ -405,7 +405,14 @@ def assemble_requests(
     _ = prompt_path.read_text()
 
     requests: list[SessionRequest] = []
-    for entry in manifest["sessions"]:
+    for position, entry in enumerate(manifest["sessions"], 1):
+        # Validate BEFORE anything derives from the id: build_custom_id
+        # would otherwise raise AttributeError on a list or a dict, several
+        # frames from the manifest that caused it.
+        validate_session_id(
+            entry.get("session_id"),
+            where=f"{manifest_path}: session {position}",
+        )
         transcript_text = extractor.extract_transcript_text(
             entry["transcript_path"]
         )
@@ -1168,6 +1175,8 @@ def haiku_submit(
     # session from the state map and write one session's output under
     # another's name — either way, after the batch had been paid for.
     for position, request in enumerate(requests, 1):
+        # Every request, not a sample: a manifest whose SECOND session
+        # carries an unusable id would otherwise be submitted and billed.
         validate_session_id(
             request.session_id, where=f"manifest session {position}"
         )
@@ -2447,7 +2456,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    requests = assemble_requests(args.manifest, args.prompt)
+    try:
+        # Before the cost gate, deliberately: an unusable session id is a
+        # manifest problem, and being told about it after approving a
+        # billed run -- as a traceback -- helps nobody.
+        requests = assemble_requests(args.manifest, args.prompt)
+    except SessionIdError as exc:
+        print(f"{args.manifest} cannot be used: {exc}", file=sys.stderr)
+        return 2
     if not requests:
         # An empty manifest is a mistake upstream, not a run with nothing to
         # do: say so and stop before creating a provider directory or a
