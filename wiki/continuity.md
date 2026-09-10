@@ -2402,8 +2402,14 @@ type and ro/rw); write probes with the unchanged accepted errno set
 as type-mismatch, not a pass); a host-side after-session persistence
 check (the deciding field); removal probes on the placeholder; a
 two-level-absent target; retire the scoped variant as a variable
-(two runs, no effect) and run baseline-only. No criterion change until
-the head arrives; host runs remain Shawn's.
+(two runs, no effect) and run baseline-only. Astra agreed all six and
+scoped the implementation (O_PATH + fdinfo mnt_id joined to mountinfo;
+`own/agents/nested-control.txt` as the absent-parent target under the
+existing `agents/**` restriction; baseline-only host command, nine
+requests; a stricter pass rule than proposed — any successful mutation
+fails even if contained, EBUSY auxiliary only, host-side post-session
+absence additionally required, unknown observations fail). Accepted
+without change; awaiting the head for review; host runs remain Shawn's.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
