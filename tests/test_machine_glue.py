@@ -318,7 +318,14 @@ def assert_composed(claude_md: Path, local_marker: str) -> None:
     composed = claude_md.read_text(encoding="utf-8")
     markers = ("COMMON-SECTION", "OVERLAY-SECTION", local_marker)
     for marker in markers:
-        assert marker in composed, f"{marker} missing from {claude_md}"
+        # Round 4d-7 (L-ii): EXACTLY once. Comparing first-occurrence
+        # positions only, a composer that emitted a layer twice
+        # (`cat "$LOCAL"; cat "$COMMON"`) satisfied every assertion here
+        # while doubling the operator's global instructions.
+        count = composed.count(marker)
+        assert count == 1, (
+            f"{marker} appears {count} times in {claude_md}, expected 1"
+        )
     positions = [composed.index(marker) for marker in markers]
     assert positions == sorted(positions), (markers, positions)
 
