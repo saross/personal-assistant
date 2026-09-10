@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-one PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-three PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -757,9 +757,9 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
 #136, #141
-(archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
-one);
-#142, #146, #150 (bake-off rounds 4e-5 to 4e-7).
+(archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
+then one, then two);
+#142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
 
 Open, each with its verdict so far:
 
@@ -854,8 +854,22 @@ Open, each with its verdict so far:
   derivation checked structurally for all nine constants across six
   scripts; dead constants removed; the last layout literal derived; the
   agent document's example completed with a doc-to-code test; the
-  newer-than-code stamp wording corrected. Coordinator suite, push, and
-  second re-audit pending.
+  newer-than-code stamp wording corrected. Coordinator suite 4492
+  passed, 19 deselected, exit 0 (the numpy skips gone now the stack is
+  installed); pushed. Second re-audit verdict merge — C1 closed at
+  runtime (phase 3 unstamped → exit 2 before any spaCy load; a
+  comprehension is no longer possible; the re-read-by-comprehension
+  mutation fails both new tests); the six consumers now accept the live
+  stamped files. **Merged 2026-09-10.** DEFERRED follow-ups: the
+  derivation check is a shape check (a hard-coded base passed to the
+  helper passes; correct indirection through a constant fails); the
+  "no re-read" guarantee rests on the `payloads` unpack plus a substring
+  scan for `load_json` (a re-read spelled `json.loads(...read_text())`
+  added after the unpack survives, in both scripts); the doc-example
+  regex crosses fence boundaries (an earlier bash block in the document
+  would break the test); the example's path values unchecked; the
+  argument order into `load_corpus_space` unpinned (fail-loud at
+  runtime); nested `add_argument` calls not recovered.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -995,7 +1009,8 @@ Open, each with its verdict so far:
   test moved to the front of `say_data_remedy`; `assert_composed`
   requires each marker exactly once; the trim-set extraction parses
   whole argument lists and refuses non-integer literals. Coordinator
-  suite, push, and second re-audit pending.
+  suite 4502 passed, 19 deselected, exit 0; pushed; second re-audit of
+  PR #149 running.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1221,8 +1236,9 @@ Open, each with its verdict so far:
   copyto` without `--immutable`; the copyto runs only after a successful
   copy, its failure is exit 2 ("the archive copy SUCCEEDED, only the
   derived index is stale"), an absent catalogue is skipped, and the dry
-  run previews both. Coordinator suite, push, and third re-audit
-  pending.
+  run previews both. Merged with main (032d48d), coordinator suite 4541
+  passed, 19 deselected, exit 0; pushed; third re-audit of PR #147
+  running.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1298,8 +1314,18 @@ Open, each with its verdict so far:
   write failures re-raised with the path. The agent's shell died on a
   full /tmp after its green clean-copy run (4486 passed); its work
   directory was removed by hand. Merged with main (dd046f8); coordinator
-  suite 4487 passed, 2 skipped, 19 deselected, exit 0; **PR #154, open,
-  re-audit DEFERRED** (stop point).
+  suite 4487 passed, 2 skipped, 19 deselected, exit 0; **PR #154, merged
+  165068a** 2026-09-10 (re-audit verdict merge: `create` never reached
+  for an unusable id; the decision table, validation order, fsync order,
+  and fd hygiene confirmed). Its three coverage gaps — a readable
+  manifest naming no session still defeats a good recorded one silently
+  and prints a remedy the rebuild path refuses; submit validation pinned
+  by single-session fixtures only; the directory-fsync target unpinned —
+  plus an uncaught `SessionIdError` after the cost gate, the ENOSPC
+  decoration missing `mkstemp`, a collapsed exception type, a duplicate
+  diagnostic, an unguarded `build_custom_id`, and a mis-scoped help
+  slice are round 4e-9 (`claude/audit-round4e-9`), the last on this
+  branch for the cycle.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`

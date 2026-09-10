@@ -811,6 +811,44 @@ def extract_one(manifest_entry: dict, output_dir: Path, *,
     }
 
 
+#: The two files that say a paper's bundle is not to be trusted. Written by
+#: `extract_one`, and the only durable evidence a run left something behind.
+MARKER_FILENAMES = ("extraction-incomplete.txt", "extraction-error.txt")
+
+
+def leftover_markers(output_dir: Path) -> dict[str, list[str]]:
+    """Map marker filename to the paper keys still carrying it.
+
+    Nothing consumed either marker: they were written faithfully and read by
+    no one, so a partial or failed bundle sat in the corpus looking like any
+    other (round 4g-5, item L-d1).
+    """
+    found: dict[str, list[str]] = {name: [] for name in MARKER_FILENAMES}
+    if not output_dir.is_dir():
+        return {name: keys for name, keys in found.items() if keys}
+    for paper_dir in sorted(output_dir.iterdir()):
+        if not paper_dir.is_dir():
+            continue
+        for name in MARKER_FILENAMES:
+            if (paper_dir / name).exists():
+                found[name].append(paper_dir.name)
+    return {name: keys for name, keys in found.items() if keys}
+
+
+def leftover_marker_report(output_dir: Path) -> list[str]:
+    """Return the warning lines for any markers left by an earlier run."""
+    leftovers = leftover_markers(output_dir)
+    if not leftovers:
+        return []
+    lines = ["WARNING: the extraction tree still carries markers from an "
+             "earlier run; those papers' bundles are not complete:"]
+    for name, keys in sorted(leftovers.items()):
+        lines.append(f"  {name}: {', '.join(keys)}")
+    lines.append("  Re-extract those keys, or move the marker aside once you "
+                 "have decided the bundle is sound.")
+    return lines
+
+
 def _tool_versions() -> dict:
     versions = {}
     try:
@@ -894,6 +932,9 @@ def main() -> int:
 
     if not args.dry_run:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    for line in leftover_marker_report(args.output_dir):
+        print(line, file=sys.stderr)
 
     results = []
     for entry in entries:

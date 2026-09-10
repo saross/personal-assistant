@@ -547,12 +547,126 @@ def test_provenance_describes_the_calling_script_not_this_module(tmp_path):
 
 
 def test_an_explicit_script_path_wins(tmp_path):
-    """The inference is a default, not a mandate: callers can be explicit."""
-    repo, _run = _throwaway_repo(tmp_path)
+    """The inference is a default, not a mandate: callers can be explicit.
+
+    Both halves are built here rather than assumed: a file inside a
+    throwaway repository, and one outside every repository. Asserting only
+    the "outside" half was vacuous in a git-archive export, where the whole
+    tree is outside a repository and the test passed without the parameter
+    doing anything (round 4g-5, item L-c2).
+    """
+    repo, run = _throwaway_repo(tmp_path)
     stranger = tmp_path / "outside-any-repo.py"
     stranger.write_text("# not in a repository\n", encoding="utf-8")
 
-    block = style_support.provenance_block("demo.py", script_path=stranger)
+    outside = style_support.provenance_block("demo.py", script_path=stranger)
+    assert outside["git_commit"] is None
+    assert outside["git_note"] == "not inside a git repository"
+
+    # The same call, pointed at a tracked file, records that repository —
+    # so the parameter is doing the work, not the surroundings.
+    inside = style_support.provenance_block(
+        "demo.py", script_path=repo / "script.py")
+    assert inside["git_commit"] == run("rev-parse", "HEAD").stdout.strip()
+    # `git_note` is written only when there is something to explain.
+    assert "git_note" not in inside
+
+
+# ---------------------------------------------------------------------------
+# load_checked_payloads (round 4g-5, item M-a1)
+# ---------------------------------------------------------------------------
+
+def _phase_file(path: Path, *, stamped: bool = True, extra: dict | None = None):
+    """Write a minimal phase-shaped JSON file, stamped unless told otherwise."""
+    payload: dict = {"per_paper": [], "aggregate": {}}
+    if stamped:
+        payload["metric_schema"] = style_support.metric_schema_stamp()
+    payload.update(extra or {})
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_checked_payloads_come_back_only_when_every_file_passes(tmp_path):
+    """The happy path: two stamped files, returned in the order asked for."""
+    first = _phase_file(tmp_path / "phase1.json", extra={"which": "one"})
+    second = _phase_file(tmp_path / "phase3.json", extra={"which": "three"})
+
+    payloads, problem = style_support.load_checked_payloads([first, second])
+
+    assert problem is None
+    assert [p["which"] for p in payloads] == ["one", "three"]
+
+
+def test_one_stale_file_withholds_every_payload(tmp_path):
+    """Nothing is returned when anything fails — not even the file that passed.
+
+    This is the property the AST assertions could only approximate: a caller
+    holding payloads is holding checked ones, so no arrangement of the code
+    around the call can reach an unchecked corpus. The mutation this kills:
+    returning the payloads accumulated so far alongside the error.
+    """
+    good = _phase_file(tmp_path / "phase1.json")
+    stale = _phase_file(tmp_path / "phase3.json", stamped=False)
+
+    payloads, problem = style_support.load_checked_payloads([good, stale])
+
+    assert payloads is None
+    assert "metric_schema version is absent" in problem
+    assert str(stale) in problem
+
+
+def test_a_missing_file_is_reported_rather_than_raised(tmp_path):
+    """The loader subsumes the existence check its callers used to do."""
+    payloads, problem = style_support.load_checked_payloads(
+        [tmp_path / "absent.json"])
+
+    assert payloads is None
+    assert "Input not found" in problem
+
+
+def test_unreadable_json_is_reported_rather_than_raised(tmp_path):
+    """A truncated file is a diagnostic, not a traceback out of a consumer."""
+    broken = tmp_path / "phase1.json"
+    broken.write_text('{"per_paper": [', encoding="utf-8")
+
+    payloads, problem = style_support.load_checked_payloads([broken])
+
+    assert payloads is None
+    assert "could not be read as JSON" in problem
+
+
+def test_a_json_document_that_is_not_an_object_is_refused(tmp_path):
+    """`[]` has no metric_schema to check and must not pass as a payload."""
+    listy = tmp_path / "phase1.json"
+    listy.write_text("[]", encoding="utf-8")
+
+    payloads, problem = style_support.load_checked_payloads([listy])
+
+    assert payloads is None
+    assert "expected a JSON object" in problem
+
+
+def test_no_paths_is_no_payloads_and_no_error():
+    """An empty list is a legitimate call (a consumer with nothing optional)."""
+    assert style_support.load_checked_payloads([]) == ([], None)
+
+
+def test_a_caller_with_no_file_is_reported_not_absorbed(tmp_path):
+    """`exec` of a string has no ``__file__``, and must not borrow ours.
+
+    Falling back to ``git_state()``'s own default describes style_support.py
+    and hands back a commit that says nothing about the code that ran — the
+    L3 bug, re-entered through the one caller shape the inference cannot
+    resolve. The mutation this kills: dropping the ``hint is None`` branch so
+    the fallback returns.
+    """
+    captured: dict[str, dict] = {}
+    exec(  # noqa: S102 — exercising precisely the no-__file__ caller shape
+        "captured['block'] = style_support.provenance_block('exec.py')",
+        {"style_support": style_support, "captured": captured},
+    )
+    block = captured["block"]
 
     assert block["git_commit"] is None
-    assert block["git_note"] == "not inside a git repository"
+    assert block["git_dirty"] is None
+    assert "no __file__" in block["git_note"]
