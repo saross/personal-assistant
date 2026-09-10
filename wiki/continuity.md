@@ -2381,9 +2381,13 @@ or uninspectable rename destination refuses the rename with a closed
 not-attempted outcome; malformed protocol replies are protocol
 observations; prerequisites listed) and a narrow final check approved
 it — five mutations killed, an ablation of the prerequisites matching
-the record. **Next: Shawn reruns the host comparison** with the command
-pinned to that source, to get the attributed report
-(`/tmp/sol-live-acceptance-attributed-host.json`).
+the record. **#8 merged 7ef60df**, handoff 860a531 (the earlier command
+marked superseded, its evidence retained; "malformed protocol replies"
+wording adopted). **Next: Shawn reruns the host comparison** with the
+pinned command in `~/gpt-hub/integration-records/2026-09-11-missing-
+surface-evidence.md`, producing `/tmp/sol-live-acceptance-attributed-
+host.json`; the per-probe outcome and errno evidence decides the next
+correction. Nothing owed by either agent until then.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
