@@ -2349,6 +2349,40 @@ question was put to Shawn four times in one day.**
 **Hours: 2026-09-06 = 8.0h · 2026-09-07 = 9.5h.**
 
 
+### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
+
+Fable session (continued). Shawn resumed the paused audit after the usage
+reset, approved installing the style-analyser stack, and asked for the
+loose ends tied up so work can return to the GPT integration.
+
+- **Closed.** PRs #147 (archive, three re-audits), #149 (machine glue,
+  two), #151 (style analyser, two), #153, #154, #156 merged; #155 (the
+  hermeticity audit hook) on its final narrow re-audit after round 4a-8
+  fixed the hook to compare the real path (it had been watching the
+  resolved store while every module writes through the `memories`
+  symlink). Thirty-six PRs from the audit; main suite about 4,650; the
+  report's "Closing summary" section is the final report. Seven audit
+  worktrees removed; `claude-audit-round4a` remains for #155.
+- **Live matters.** R2 push: `CATALOG.json` (a derived index) excluded
+  from the immutable copy and pushed by a separate `copyto`; the merged
+  script's dry run against the bucket exited 0 with the catalogue
+  previewed — the next daily push should complete. Phase 1: numpy,
+  scipy, scikit-learn, spaCy 3.8.16 and `en_core_web_sm` 3.8.0 installed
+  into the venv and added to `requirements.txt` (2ecc6e0); the step-2
+  manifest rebuilt as `data/style-corpus/extract-input-manifest.json`;
+  phase 1 and phase 3 re-run and stamped with metric schema 2 (data
+  fb1e9a0). Phase 1 exits 1 on its run-1 regression anchors, which the
+  clean corpus has failed since May — decision D9 (re-baseline).
+- **Process slip.** PR #149 was merged while its pre-merge suite showed
+  one failure; the failure was the live extraction hook appending to the
+  store during a whole-checkout snapshot test (a flake in the live
+  checkout only, deferred fix); merges now read the suite line first.
+- **Deferred** (Shawn's call, reviewed together): all remaining
+  follow-ups are test-strength or wording; the one with stakes is D6
+  (delete the `claude/audit-hook-tests` remote branch and ask GitHub
+  support to drop the cached commits). Operator actions 2-9 and
+  decisions D1-D9 stand.
+
 ### 2026-09-08 (Tue, latest AUDIT) — FIRST REPOSITORY AUDIT: FIVE BRANCHES MERGED AFTER 40 FRESH-CONTEXT RE-AUDITS, ONE PRIVACY INCIDENT CONTAINED
 
 Fable session. Shawn asked for `/audit` on the day's agent-mail and tripwire
