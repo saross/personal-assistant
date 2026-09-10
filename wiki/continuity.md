@@ -2411,7 +2411,16 @@ loose ends tied up so work can return to the GPT integration.
   follow-ups (the hold instruction printed last, so a character-unit
   context limit would truncate exactly the guard; MAX_LISTED unpinned;
   trailing bytes after the payload; record currency and the portable
-  test claim). Verdict mailed; "#6 is yours to merge" to Shawn.
+  test claim). Verdict mailed; Shawn merged #6 (a0904a0); Astra landed
+  the four follow-ups on gpt-hub main (d57ea20) under the standing
+  routine-change instruction — the hold instruction now precedes every
+  path, the ten-path ceiling is tested, the context-limit unit is
+  tokens per the official hooks documentation, and single-object stdin
+  parsing is retained with a regression. **Mail review complete on both
+  sides.** Next checkpoint in the plan: the scoped-subpath acceptance
+  diagnostic with its missing-surface denial control (Astra's, with
+  Shawn present); no permission, admission, or instruction install
+  changed today.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
