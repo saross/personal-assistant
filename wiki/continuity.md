@@ -2428,8 +2428,11 @@ loose ends tied up so work can return to the GPT integration.
   every diagnostic path, no protected surface in the diff; three
   follow-ups (the sibling-write control unpinned and unable to record
   false; a narrow except in run_variant) and a note on reading a
-  diagnostic-blocked result. "#7 is yours to merge" for the morning; the
-  host comparison remains Shawn's to run.
+  diagnostic-blocked result. Astra addressed all three within the hour
+  (0b2ebb2); a narrow final check re-applied the mutations (each killed
+  twice or thrice) and approved; Astra may land it under the standing
+  routine-change instruction. The host comparison remains Shawn's to
+  run in the morning.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
