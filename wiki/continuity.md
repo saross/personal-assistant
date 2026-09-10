@@ -2387,7 +2387,23 @@ wording adopted). **Next: Shawn reruns the host comparison** with the
 pinned command in `~/gpt-hub/integration-records/2026-09-11-missing-
 surface-evidence.md`, producing `/tmp/sol-live-acceptance-attributed-
 host.json`; the per-probe outcome and errno evidence decides the next
-correction. Nothing owed by either agent until then.
+correction. **Shawn ran it the same night** (sha 96ccefe1…; identical
+in both variants again): every failing probe is the placeholder RENAME
+returning EBUSY at the filesystem layer with the target present at
+probe time although absent at preparation, nothing created. Reading:
+the runtime interposes a synthetic mount at each missing protected
+path (rename of a mount point is EBUSY whatever its mode), so the
+"absent surface simply created" fear did not materialise, but nothing
+yet proves the placeholder resists writes or that a write inside it
+would not persist. Agreed Astra's next probe design and added six
+items: type and mount identity recorded (statx mount id, mountinfo
+type and ro/rw); write probes with the unchanged accepted errno set
+(child mkdir/O_EXCL create; write-open and O_TRUNC separately; EISDIR
+as type-mismatch, not a pass); a host-side after-session persistence
+check (the deciding field); removal probes on the placeholder; a
+two-level-absent target; retire the scoped variant as a variable
+(two runs, no effect) and run baseline-only. No criterion change until
+the head arrives; host runs remain Shawn's.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
