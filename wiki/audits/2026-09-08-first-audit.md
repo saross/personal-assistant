@@ -937,8 +937,23 @@ Open, each with its verdict so far:
   HOME 4351 passed (a first attempt failed with 338 `test_zotero` errors
   under concurrent suite load and passed on re-run — the round 4a-3
   transient). Merged with main (72177ca), coordinator suite 4504 passed,
-  2 skipped, 19 deselected, exit 0; **PR #155, open, re-audit DEFERRED**
-  (stop point).
+  2 skipped, 19 deselected, exit 0; **PR #155**. Re-audit (2026-09-10)
+  verdict **do not merge** — C1: the hook compares the RAW path the
+  `open` event carries against a set of RESOLVED paths, and the
+  canonical files are the symlink paths `memories/...` that every
+  production module uses, so an append through the symlink is silent
+  under STRICT (reproduced; the `resolve()` mutation survives all 172
+  tests because the nested store has no symlink). M2: the recorded root
+  cause of the first prototype's failure (a `PosixPath` reaching the
+  event) is false on Python 3.13 — the event always carries `str`. M1:
+  the `store_writes` advisory still says "Set PA_HERMETICITY_STRICT=1"
+  when it is set. The cost is +1.6 % (+0.45 µs per `open`), not
+  "none". Everything else (leak net in `pytest_sessionfinish`, the
+  structural tail, labels, wording, the never-raises guard, no arming
+  without a store) verified. Round 4a-8 (closing): realpath before the
+  set test with a basename pre-filter, a symlinked-store nested case,
+  the false narrative corrected, the advisory branched, the cost stated;
+  then a narrow re-audit of that hunk.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
