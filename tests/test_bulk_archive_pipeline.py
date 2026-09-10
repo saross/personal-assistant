@@ -2425,6 +2425,48 @@ class TestSizelessManifestEdges:
         messages = " ".join(record.getMessage() for record in caplog.records)
         assert "size not recorded" in messages, messages
         assert pipeline.entries() == [], "a dry run wrote to the archive"
+        # The remedy has to reach the PREVIEW. The dry run returns before
+        # the completeness guard, so the summary that normally carries it
+        # is unreachable here (round 4c-7, low).
+        assert "re-run discover" in messages, (
+            "the dry run described the problem but not the fix"
+        )
+        assert "2 of 2 manifest entries record no size" in messages, messages
+
+    def test_dry_run_survives_a_manifest_with_no_turn_count(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``turns`` is absent from the same legacy manifests as ``size``.
+
+        The fallback was written but never exercised, so nothing said
+        whether the listing survives it (round 4c-7, low).
+        """
+        pipeline.add_session(SID_A)
+        manifest = pipeline.discover()
+        del manifest[0]["turns"]
+        del manifest[0]["size_bytes"]
+        pipeline.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive(dry_run=True)
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "? turns" in messages, messages
+        assert pipeline.entries() == []
+
+    def test_a_fully_sized_manifest_previews_without_the_warning(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: an ordinary preview stays quiet about sizes."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive(dry_run=True)
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "record no size" not in messages
+        assert "MB" in messages
 
     def test_the_shown_ids_and_the_remainder_agree(
         self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture

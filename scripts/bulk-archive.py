@@ -1695,12 +1695,13 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     if args.dry_run:
         logger.info("[DRY RUN] Would archive %d sessions:", len(to_archive))
+        n_sizeless = 0
         for entry in to_archive[:10]:
-            # ``size_bytes`` is absent from a manifest that predates size
-            # recording. Reading it unguarded made `archive --dry-run` die
-            # with a KeyError over exactly the manifest the sizeless-entry
-            # summary exists to report — the preview crashed before the
-            # warning explaining why could ever be printed (audit round
+            # ``size_bytes`` and ``turns`` are both absent from a manifest
+            # that predates size recording. Reading either unguarded made
+            # `archive --dry-run` die with a KeyError over exactly the
+            # manifest whose missing fields need explaining — the preview
+            # crashed before the explanation could be printed (audit round
             # 4c-6, finding L-e).
             size_bytes = entry.get("size_bytes")
             size_note = (
@@ -1716,6 +1717,25 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
             )
         if len(to_archive) > 10:
             logger.info("  ... and %d more", len(to_archive) - 10)
+
+        # The dry run returns here, BEFORE the completeness guard and the
+        # sizeless summary it feeds, so the remedy that summary carries
+        # would never reach a preview. Counted over the whole manifest, not
+        # just the ten listed, and reported here instead (audit round 4c-7,
+        # low: the previous comment claimed a remedy the dry run could not
+        # print).
+        n_sizeless = sum(
+            1 for entry in to_archive if entry.get("size_bytes") is None
+        )
+        if n_sizeless:
+            logger.warning(
+                "[DRY RUN] %d of %d manifest entr%s record no size, so the "
+                "shrink and growth checks cannot run for them (the manifest "
+                "predates size recording) — re-run discover to restore "
+                "those checks",
+                n_sizeless, len(to_archive),
+                "y" if n_sizeless == 1 else "ies",
+            )
         return
 
     # Archive each session
