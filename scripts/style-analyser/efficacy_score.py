@@ -35,34 +35,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import phase5_evaluator as p5  # noqa: E402
 import style_support  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
+#: Derived from style_support so that repointing one base moves EVERY path
+#: in the experiment together (round 4g-5, item L-b2). It did not: the base
+#: moved --judge-dir and --key-dir while --passages-dir and four other
+#: scripts kept their own hard-coded copy, so a "second experiment" would
+#: have been assembled half in one directory and half in another.
+DEFAULT_EXPERIMENT_DIR = style_support.experiment_root()
 
 # {topic_id}__{condition}__rep{n}.md  -> e.g.  A4__C2__rep3.md
 FNAME_RE = re.compile(r"^(?P<topic>[A-Z]\d+)__(?P<cond>C\d)__rep(?P<rep>\d+)$")
 
 
-def load_corpus_space(phase1_path: Path, phase3_path: Path, spacy_model: str,
-                      reference_phase1_path: Path | None = None):
-    """Load the corpus matrices, LOO envelope, feature space and spaCy once.
+def load_corpus_space(phase1: dict, phase3: dict, spacy_model: str,
+                      reference_phase1: dict | None = None):
+    """Build the feature space, corpus matrix, LOO envelope and spaCy once.
 
-    `phase1_path` is the whole-corpus file; its `aggregate` block supplies the
+    Takes the already-loaded, already-CHECKED payloads rather than paths.
+    Reading the files again here — which is what it used to do — meant the
+    stamp check ran over one set of bytes and the scoring over another: a
+    check-then-reload, with nothing tying the two together (round 4g-6, C1).
+    Now the only reader of these files is the checked loader in ``main``.
+
+    `phase1` is the whole-corpus payload; its `aggregate` block supplies the
     8-metric gate's aspirational targets (register central tendencies, not
     length-dependent), so it is always used for the gate.
 
-    If `reference_phase1_path` is given (a length-matched excerpt reference from
+    If `reference_phase1` is given (a length-matched excerpt reference from
     `efficacy_build_reference.py`), the Mahalanobis centroid, covariance and
     leave-one-out (LOO) envelope are built from THOSE excerpt vectors instead of
     the whole-paper vectors. This corrects the passage-length artefact (hapax
     ratio etc.) documented in the pilot findings, while the gate stays anchored
     to the whole corpus.
     """
-    phase1 = p5.load_json(phase1_path)
-    phase3 = p5.load_json(phase3_path)
     fs = p5.resolve_feature_space(phase3)
-    matrix_source = reference_phase1_path or phase1_path
-    matrix_phase1 = (p5.load_json(reference_phase1_path)
-                     if reference_phase1_path else phase1)
+    matrix_phase1 = reference_phase1 if reference_phase1 is not None else phase1
     X, _keys = p5.build_corpus_matrix(matrix_phase1, fs.active_paths)
     loo = p5.leave_one_out_distances(X)
 
@@ -70,7 +76,7 @@ def load_corpus_space(phase1_path: Path, phase3_path: Path, spacy_model: str,
     nlp = spacy.load(spacy_model)
     nlp.select_pipes(disable=["ner"])
     nlp.max_length = 2_000_000
-    return phase1, phase3, fs, X, loo, nlp, str(matrix_source)
+    return fs, X, loo, nlp
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,7 +98,26 @@ def main(argv: list[str] | None = None) -> int:
                     help="score the passages and report, but write no file")
     args = ap.parse_args(argv)
 
-    passages_dir = args.experiment_dir / "passages"
+    # FIRST, before anything reads a corpus: every phase file this run will
+    # use, loaded through the checked loader, which refuses before returning
+    # any of them. --phase3 is in the list because it defines the feature
+    # space (which metrics are bimodal, and so excluded from the distance),
+    # and a promotion file built from superseded measurements answers that
+    # about different metrics than the ones being scored (round 4g-5, M-a1).
+    # An explicit, literal list — no comprehension. A filtering comprehension
+    # is how ``if p is not None`` became ``if p is None`` and handed the
+    # loader an empty list, skipping every check with the suite green; the
+    # loader keeps a None input in its position so this list can be fixed and
+    # unpacked positionally (round 4g-6, C1).
+    payloads, problem = style_support.load_checked_payloads(
+        [args.phase1, args.phase3, args.reference_phase1]
+    )
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    phase1, phase3, reference_phase1 = payloads
+
+    passages_dir = style_support.passages_dir(args.experiment_dir)
     if not passages_dir.is_dir():
         print(f"No passages dir: {passages_dir}", file=sys.stderr)
         return 2
@@ -106,21 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         for rec in manifest.get("records", []):
             stratum_by_topic[rec["topic_id"]] = rec["stratum"]
 
-    # --phase3 with them: it defines the feature space (which metrics are
-    # bimodal, and so excluded from the distance), and a promotion file built
-    # from superseded measurements answers that about different metrics.
-    for candidate in (args.phase1, args.phase3, args.reference_phase1):
-        if candidate is None or not candidate.exists():
-            continue
-        stale = style_support.metric_schema_error(
-            json.loads(candidate.read_text(encoding="utf-8")), candidate)
-        if stale:
-            print(stale, file=sys.stderr)
-            return 2
-
-    phase1, phase3, fs, X, loo, nlp, matrix_source = load_corpus_space(
-        args.phase1, args.phase3, args.spacy_model, args.reference_phase1
+    # The CHECKED payloads go in; no file is read again after the check.
+    fs, X, loo, nlp = load_corpus_space(
+        phase1, phase3, args.spacy_model, reference_phase1
     )
+    matrix_source = str(args.reference_phase1 or args.phase1)
 
     results: list[dict] = []
     skipped: list[str] = []

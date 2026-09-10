@@ -879,38 +879,15 @@ def test_the_provenance_section_names_the_code_and_the_inputs():
     assert "phase1.json" in section and "abc" in section
 
 
-def _schema_checked_arguments(main_fn: ast.FunctionDef) -> set[str]:
-    """Return the ``args.<name>`` attributes fed to a metric_schema check.
-
-    Read from the source rather than by running ``main``: this module imports
-    numpy, scipy and scikit-learn at module scope and none is installed here,
-    so the only stdlib-reachable way to assert what ``main`` checks is to read
-    what it does.
-    """
-    checked: set[str] = set()
-    for node in ast.walk(main_fn):
-        if not isinstance(node, ast.For):
-            continue
-        if not _attribute_calls(node, "metric_schema_error"):
-            continue
-        for element in ast.walk(node.iter):
-            if (isinstance(element, ast.Attribute)
-                    and isinstance(element.value, ast.Name)
-                    and element.value.id == "args"):
-                checked.add(element.attr)
-    return checked
-
-
-#: Calls in ``main`` that CONSUME a phase-1 or phase-3 payload. A stamp check
-#: that runs after any of them is not an interlock: the corpus has already
-#: been used to build the feature space, fit the model, or score the input by
-#: the time the file is pronounced stale.
+#: Calls in ``main`` that CONSUME a phase-1 or phase-3 payload. The checked
+#: loader has to run before every one of them.
 _PHASE_CONSUMING_CALLS = (
     "build_validation_report",
     "resolve_feature_space",
     "build_corpus_matrix",
     "evaluate_text",
     "build_gate",
+    "load_json",
 )
 
 
@@ -923,51 +900,57 @@ def _called_name(call: ast.Call) -> str | None:
     return None
 
 
-def _stamp_check_line(main_fn: ast.FunctionDef) -> int:
-    """Line of the loop that performs the metric_schema check."""
-    for node in ast.walk(main_fn):
-        if isinstance(node, ast.For) and _attribute_calls(
-                node, "metric_schema_error"):
-            return node.lineno
-    raise AssertionError("main() no longer checks metric_schema at all")
+def test_main_loads_its_phase_files_through_the_checked_loader():
+    """The guarantee is the loader, not the order of a hand-written check.
 
+    ``style_support.load_checked_payloads`` refuses before returning any
+    payload, so a ``main`` that obtains its phase files from it cannot reach
+    an unchecked one — and that property is tested directly, without numpy,
+    in ``tests/test_style_support.py``. All this file needs to assert is that
+    ``main`` gets its payloads that way, and gets them before anything else
+    touches a corpus.
 
-def _first_consumer(main_fn: ast.FunctionDef) -> tuple[str, int]:
-    """Return the earliest (name, line) among the phase-consuming calls."""
-    found = [(_called_name(node), node.lineno) for node in ast.walk(main_fn)
-             if isinstance(node, ast.Call)
-             and _called_name(node) in _PHASE_CONSUMING_CALLS]
-    assert found, "no phase-consuming call found; the guard has lost its point"
-    return min(found, key=lambda pair: pair[1])
-
-
-def test_the_stamp_check_runs_before_anything_consumes_the_corpus():
-    """Membership is not enough: the check must come FIRST.
-
-    Collecting which arguments are checked says nothing about when. Moving
-    the whole stamp loop below the validate branch's ``return`` left the
-    suite green while the report was produced from a corpus the check never
-    reached. The mutation this kills: moving the loop below
-    ``build_validation_report`` (or any other consumer).
+    The mutation this kills: going back to a hand-rolled check-then-load
+    sequence, every defeat of which (hoisting the check into a nested
+    function called later, wrapping it in an environment condition, emptying
+    its iterable) passed the position-and-membership assertions this replaces.
     """
     main_fn = _function_def(_module_ast(), "main")
-    consumer, consumer_line = _first_consumer(main_fn)
+    loader_calls = [node for node in ast.walk(main_fn)
+                    if isinstance(node, ast.Call)
+                    and _called_name(node) == "load_checked_payloads"]
 
-    assert _stamp_check_line(main_fn) < consumer_line, (
-        f"the metric_schema check runs after {consumer}() has already used "
-        "the corpus"
-    )
+    assert len(loader_calls) == 1, "main must load its phase files exactly once"
+
+    # WHICH inputs, not just how many: `[args.phase1, args.phase3]` ->
+    # `[args.phase1, args.phase1]` left phase 3 unchecked and the suite green
+    # (round 4g-6, M1). The list is a literal for the same reason as in
+    # efficacy_score: a comprehension can filter every element away.
+    argument = loader_calls[0].args[0]
+    assert isinstance(argument, ast.List), "the inputs must be a literal list"
+    passed = {element.attr for element in argument.elts
+              if isinstance(element, ast.Attribute)
+              and isinstance(element.value, ast.Name)
+              and element.value.id == "args"}
+    assert passed == {"phase1", "phase3"}
+
+    # And the refusal is acted on rather than computed and discarded.
+    guards = [node for node in ast.walk(main_fn)
+              if isinstance(node, ast.If)
+              and isinstance(node.test, ast.Name)
+              and node.test.id == "problem"
+              and any(isinstance(inner, ast.Return)
+                      and getattr(inner.value, "value", 0) != 0
+                      for inner in ast.walk(node))]
+    assert guards, "the loader's `problem` must be tested and returned on"
+
+    consumers = [(_called_name(node), node.lineno) for node in ast.walk(main_fn)
+                 if isinstance(node, ast.Call)
+                 and _called_name(node) in _PHASE_CONSUMING_CALLS]
+    if consumers:
+        first_name, first_line = min(consumers, key=lambda pair: pair[1])
+        assert loader_calls[0].lineno < first_line, (
+            f"the phase files are loaded after {first_name}() has already run"
+        )
 
 
-def test_both_phase_inputs_have_their_stamp_checked():
-    """Phase 3 defines the feature space, so a stale one is as bad as phase 1.
-
-    Which metrics are bimodal — and therefore excluded from the Mahalanobis
-    distance — is read from the promotion file. A promotion file computed
-    from superseded measurements answers that question about different
-    metrics than the ones being scored. The mutation this kills: checking
-    only ``args.phase1``, which is what this script did.
-    """
-    main_fn = _function_def(_module_ast(), "main")
-
-    assert {"phase1", "phase3"} <= _schema_checked_arguments(main_fn)

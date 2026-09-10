@@ -1446,7 +1446,13 @@ def test_an_interruption_with_no_prior_failure_still_leaves_evidence(
     # No prior failure, so no extraction-error.txt — but the bundle is partial
     # and must say so.
     assert not (paper_dir / "extraction-error.txt").exists()
-    assert (paper_dir / "extraction-incomplete.txt").exists()
+    marker = paper_dir / "extraction-incomplete.txt"
+    assert marker.exists()
+    # The marker has to be readable by whoever finds it: an empty file says
+    # nothing about which paper, or how far the run got.
+    text = marker.read_text(encoding="utf-8")
+    assert "AAAA1111" in text, "the marker must name the paper"
+    assert "re-run" in text.lower(), "the marker must say what to do"
     assert (paper_dir / "body.md").exists(), "the partial bundle is the point"
     assert not (paper_dir / "qa.json").exists()
 
@@ -1480,6 +1486,38 @@ def test_a_reported_failure_leaves_only_the_error_marker(tmp_path, monkeypatch):
     assert not (output_dir / "AAAA1111" / "extraction-incomplete.txt").exists()
 
 
+def test_a_crashing_extractor_leaves_only_the_error_marker(tmp_path,
+                                                          monkeypatch):
+    """The OTHER failure return: an exception inside the extractor.
+
+    Only the PDF-not-found path was covered, so neutering the unlink on the
+    exception path left both markers behind on a crash with all 82 tests
+    green — and a paper that had reported its failure looked partial as well.
+    The mutation this kills: dropping the unlink from the exception return.
+    """
+    entry = _paper_with_a_pdf(tmp_path)
+    output_dir = tmp_path / "out"
+    paper_dir = output_dir / "AAAA1111"
+
+    class ExplodingExtractor:
+        """Stands in for a PDF the real extractor cannot parse."""
+
+        config: dict = {}
+        stats: dict = {}
+
+        def extract(self, path):
+            raise RuntimeError("simulated extractor failure")
+
+    monkeypatch.setattr(extract_corpus, "load_extractor",
+                        lambda: (ExplodingExtractor, lambda text: text))
+
+    result = extract_corpus.extract_one(entry, output_dir)
+
+    assert result["status"] == "error"
+    assert (paper_dir / "extraction-error.txt").exists()
+    assert not (paper_dir / "extraction-incomplete.txt").exists()
+
+
 def test_a_dry_run_writes_no_incomplete_marker(tmp_path, monkeypatch):
     """``--dry-run`` still writes nothing at all, markers included."""
     entry = _paper_with_a_pdf(tmp_path)
@@ -1489,3 +1527,143 @@ def test_a_dry_run_writes_no_incomplete_marker(tmp_path, monkeypatch):
     extract_corpus.extract_one(entry, output_dir, dry_run=True)
 
     assert not output_dir.exists()
+
+
+def test_leftover_markers_are_reported_before_a_run(tmp_path):
+    """Nothing consumed either marker: they were written and read by no one.
+
+    A partial or failed bundle sat in the corpus looking like any other. The
+    mutation this kills: dropping the pre-run scan (or narrowing it to one of
+    the two filenames), after which a leftover marker is silent again.
+    """
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "extraction-incomplete.txt").write_text(
+        "half a bundle\n", encoding="utf-8")
+    (output_dir / "BBBB2222").mkdir()
+    (output_dir / "BBBB2222" / "extraction-error.txt").write_text(
+        "it went wrong\n", encoding="utf-8")
+    (output_dir / "CCCC3333").mkdir()
+    (output_dir / "CCCC3333" / "body.md").write_text("clean\n",
+                                                     encoding="utf-8")
+
+    report = "\n".join(extract_corpus.leftover_marker_report(output_dir))
+
+    assert "AAAA1111" in report and "extraction-incomplete.txt" in report
+    assert "BBBB2222" in report and "extraction-error.txt" in report
+    assert "CCCC3333" not in report, "a complete bundle must not be named"
+
+
+def test_a_clean_tree_reports_nothing(tmp_path):
+    """The warning must not fire on every run, or it stops being read."""
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "body.md").write_text("clean\n",
+                                                     encoding="utf-8")
+
+    assert extract_corpus.leftover_marker_report(output_dir) == []
+    assert extract_corpus.leftover_marker_report(tmp_path / "absent") == []
+
+
+def test_the_run_warns_about_leftovers_before_extracting(tmp_path, capsys,
+                                                         monkeypatch):
+    """The scan runs at the START, so an operator sees it before the work."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([]), encoding="utf-8")
+    output_dir = tmp_path / "extracted"
+    (output_dir / "AAAA1111").mkdir(parents=True)
+    (output_dir / "AAAA1111" / "extraction-incomplete.txt").write_text(
+        "half a bundle\n", encoding="utf-8")
+
+    _run_main(monkeypatch, ["--manifest", str(manifest),
+                            "--output-dir", str(output_dir)])
+
+    assert "AAAA1111" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-6 low — the document and the code must agree
+# ---------------------------------------------------------------------------
+
+AGENT_DOC = (Path(__file__).resolve().parent.parent / "agents"
+             / "corpus-style-analyser-v2.md")
+
+
+def test_the_document_names_the_markers_the_code_writes():
+    """A document naming a marker the code does not write helps nobody.
+
+    The agent is told to skip a bundle carrying either marker, so the two
+    filenames have to be the ones extract_one actually writes. The mutation
+    this kills: renaming a marker in the code (or the document) without the
+    other following.
+    """
+    doc = AGENT_DOC.read_text(encoding="utf-8")
+
+    for name in extract_corpus.MARKER_FILENAMES:
+        assert name in doc, f"the document never mentions {name}"
+
+
+def test_the_documents_example_command_only_uses_real_flags():
+    """The example told the operator to run a command that cannot run.
+
+    `extract_corpus.py --keys <key>` omits --manifest and --output-dir, both
+    required, so following the document verbatim fails with a usage error.
+    The mutation this kills: an example naming a flag the parser does not
+    define, or omitting one the parser requires.
+    """
+    import re
+
+    doc = AGENT_DOC.read_text(encoding="utf-8")
+    block = re.search(r"```bash\n(.*?extract_corpus\.py.*?)```", doc, re.S)
+    assert block, "the document no longer shows how to re-extract a key"
+    used = set(re.findall(r"--[a-z-]+", block.group(1)))
+
+    options = _extract_corpus_options()
+
+    assert used <= set(options), (
+        f"the example uses flags the parser does not define: "
+        f"{sorted(used - set(options))}"
+    )
+    required = {flag for flag, is_required in options.items() if is_required}
+    assert required <= used, (
+        f"the example omits required flags: {sorted(required - used)}"
+    )
+
+
+def _extract_corpus_options() -> dict[str, bool]:
+    """Map each ``--flag`` extract_corpus defines to whether it is required.
+
+    Read from ``main``'s own ``add_argument`` calls: the parser is built and
+    parsed in one breath there, so the calls are replayed into a recording
+    parser instead. Nothing in ``argparse`` is monkeypatched — patching the
+    module's ``ArgumentParser`` name makes its own ``super()`` lookup
+    recurse.
+    """
+    import argparse
+    import ast
+
+    recorded: dict[str, bool] = {}
+
+    class RecordingParser(argparse.ArgumentParser):
+        """Notes each option and whether the parser requires it."""
+
+        def add_argument(self, *args, **kwargs):
+            for name in args:
+                if isinstance(name, str) and name.startswith("--"):
+                    recorded[name] = bool(kwargs.get("required"))
+            return super().add_argument(*args, **kwargs)
+
+    parser = RecordingParser(description="probe")
+    source = Path(extract_corpus.__file__).read_text(encoding="utf-8")
+    main_fn = next(node for node in ast.parse(source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "main")
+    for node in main_fn.body:
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "add_argument"):
+            call = ast.Expression(body=node.value)
+            ast.fix_missing_locations(call)
+            eval(compile(call, "<parser>", "eval"),  # noqa: S307 — own source
+                 {"ap": parser, "Path": Path})
+    assert recorded, "no options were recovered from main()"
+    return recorded

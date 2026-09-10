@@ -21,3 +21,15 @@ pytest
 mcp
 pyzotero
 cc-session-toolkit @ git+ssh://git@github.com/saross/cc-session-toolkit.git@main
+
+# Style-analyser scripts (scripts/style-analyser/): the measurement layer
+# and the efficacy evaluator need the scientific stack, and phase 1 refuses
+# any spaCy model other than en_core_web_sm 3.8.0 (plan D3: the passive,
+# nominalisation, and dependency-depth metrics are calibrated to that
+# model's parser). Added 2026-09-10 after the first repository audit found
+# 19 integration tests deselected on every machine for want of these.
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4
+spacy>=3.8,<3.9
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
