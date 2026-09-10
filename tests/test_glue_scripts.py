@@ -1419,11 +1419,22 @@ class TestR2PushSafety:
     def _rclone_writing(
         self, sandbox, message: str, *, exit_code: int = 1
     ) -> None:
-        """Replace the stub with one that logs *message* and fails."""
+        """Replace the stub with one that logs *message* and fails.
+
+        It records its argv per subcommand exactly as the fixture stub
+        does. Without that, ``_ran(sandbox, "copyto")`` was unconditionally
+        False for every test using this stub — so
+        ``test_the_catalogue_is_not_pushed_when_the_copy_fails`` asserted
+        nothing, and moving ``push_catalogue live`` above the ``rclone
+        copy`` left the suite green while the script published the index
+        over a failed archive copy (audit round 4c-8, finding M-A).
+        """
         sandbox.rclone.write_text(
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {sandbox.argv_log}.$1\n'
+            f'printf "%s\\n" "$@" > {sandbox.argv_log}\n'
             f'echo {message!r} >> {sandbox.pa_dir}/logs/r2-push.log\n'
             f"exit {exit_code}\n",
             encoding="utf-8",
@@ -1700,6 +1711,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.74.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {sandbox.argv_log}.$1\n'
             "{\n"
             + (f'  echo {refusal!r}\n' if refusal_position == "first" else "")
             + f"  for i in $(seq 1 {filler}); do\n"
@@ -1816,8 +1828,30 @@ class TestR2PushSafety:
         result = self._run(sandbox)
 
         assert result.returncode == 2
+        assert self._ran(sandbox, "copy"), (
+            "the archive copy never ran, so this test proves nothing about "
+            "what follows it"
+        )
         assert not self._ran(sandbox, "copyto"), (
             "the catalogue was published over a failed archive copy"
+        )
+
+    def test_the_catalogue_push_runs_after_a_successful_copy(
+        self, sandbox
+    ) -> None:
+        """The positive control for the ordering test above.
+
+        Asserting only that copyto did NOT run is satisfied by a stub that
+        cannot record it at all — which is precisely how that assertion came
+        to be vacuous (round 4c-8, finding M-A).
+        """
+        self._with_catalogue(sandbox)
+
+        assert self._run(sandbox).returncode == 0
+
+        assert self._ran(sandbox, "copy")
+        assert self._ran(sandbox, "copyto"), (
+            "the catalogue was never published after a successful copy"
         )
 
     def test_an_absent_catalogue_is_skipped_quietly(self, sandbox) -> None:

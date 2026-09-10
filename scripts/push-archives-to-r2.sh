@@ -230,12 +230,6 @@ RCLONE_BASE_FLAGS=(
     # `date,time` is rclone's own default, so this pins today's behaviour
     # rather than changing it (audit round 4c-7, finding M-2).
     --log-format date,time
-    # Never upload a staged temporary. normalise-archive-storage.py and
-    # bulk-archive.py both write via `<name>.tmp` and rename; a process
-    # killed in between leaves the partial file behind. Uploading one is
-    # worse than it sounds: the push is --immutable and never deletes, so a
-    # half-written temporary becomes a PERMANENT object in R2 that cannot
-    # be replaced or removed (audit round 4c-3, finding L-10).
     --s3-no-check-bucket
     --s3-disable-checksum
     --fast-list

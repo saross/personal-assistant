@@ -1695,7 +1695,6 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     if args.dry_run:
         logger.info("[DRY RUN] Would archive %d sessions:", len(to_archive))
-        n_sizeless = 0
         for entry in to_archive[:10]:
             # ``size_bytes`` and ``turns`` are both absent from a manifest
             # that predates size recording. Reading either unguarded made
