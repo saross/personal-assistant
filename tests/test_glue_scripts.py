@@ -1096,6 +1096,7 @@ class TestR2PushSafety:
             "#!/usr/bin/env bash\n"
             'if [[ "$1" == "version" ]]; then echo "rclone v1.68.2"; exit 0; fi\n'
             'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {argv_log}.$1\n'
             f'printf "%s\\n" "$@" > {argv_log}\n'
             f"env > {env_log}\n"
             "exit 0\n",
@@ -1138,16 +1139,39 @@ class TestR2PushSafety:
             sandbox.script, *args, home=sandbox.home, extra_env=env
         )
 
-    def _argv(self, sandbox) -> list[str]:
-        assert sandbox.argv_log.exists(), "rclone was never invoked"
-        return sandbox.argv_log.read_text(encoding="utf-8").split("\n")
+    def _argv(self, sandbox, subcommand: str = "copy") -> list[str]:
+        """The argv of one rclone subcommand, as a list.
+
+        The stub records each subcommand separately, so the immutable bulk
+        `copy` and the catalogue `copyto` can be asserted independently.
+        """
+        log = Path(f"{sandbox.argv_log}.{subcommand}")
+        assert log.exists(), f"rclone {subcommand} was never invoked"
+        # The stub writes one argument per line, so the trailing newline
+        # leaves an empty final element; dropping it lets a test index from
+        # the end for the source and destination.
+        return [
+            argument
+            for argument in log.read_text(encoding="utf-8").split("\n")
+            if argument
+        ]
+
+    def _ran(self, sandbox, subcommand: str) -> bool:
+        """Whether a given rclone subcommand ran at all."""
+        return Path(f"{sandbox.argv_log}.{subcommand}").exists()
+
+    def _with_catalogue(self, sandbox) -> Path:
+        """Put a derived catalogue in the canonical store."""
+        catalogue = sandbox.canonical / "CATALOG.json"
+        catalogue.write_text('{"sessions": []}', encoding="utf-8")
+        return catalogue
 
     def test_dry_run_reaches_rclone_with_dry_run(self, sandbox) -> None:
         """--dry-run must survive all the way to the transfer's argv."""
         result = self._run(sandbox, "--dry-run")
 
         assert result.returncode == 0, result.stdout + result.stderr
-        argv = self._argv(sandbox)
+        argv = self._argv(sandbox, "copy")
         assert argv[0] == "copy"
         assert "--dry-run" in argv
 
@@ -1174,7 +1198,7 @@ class TestR2PushSafety:
         """
         assert self._run(sandbox, *args).returncode == 0
 
-        argv = self._argv(sandbox)
+        argv = self._argv(sandbox, "copy")
         assert argv[0] == "copy", (
             f"the transfer ran `rclone {argv[0]}`; sync deletes from R2"
         )
@@ -1655,6 +1679,197 @@ class TestR2PushSafety:
         assert result.returncode == expected, (
             f"{line!r} classified {result.returncode}, expected {expected}"
         )
+
+    def _rclone_writing_many(
+        self, sandbox, *, refusal_position: str, filler: int
+    ) -> None:
+        """A stub writing *filler* marker-level lines around one refusal.
+
+        The size matters: `grep -q` exits at its first match and the
+        producer upstream dies of SIGPIPE, so the defect only appears once
+        more than a pipe buffer (~64 KB) still had to be written. Every
+        other stub in this file writes ONE line, which is why the whole
+        suite certified a regime production never runs in.
+        """
+        refusal = (
+            "2026/09/09 12:00:00 ERROR : CATALOG.json: Source and "
+            "destination exist but do not match: immutable file modified"
+        )
+        log = f"{sandbox.pa_dir}/logs/r2-push.log"
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.74.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            "{\n"
+            + (f'  echo {refusal!r}\n' if refusal_position == "first" else "")
+            + f"  for i in $(seq 1 {filler}); do\n"
+            '    echo "2026/09/09 12:00:00 ERROR : path-$i/session.jsonl.gz: '
+            'Failed to copy: NotImplemented: Not Implemented"\n'
+            "  done\n"
+            + (f'  echo {refusal!r}\n' if refusal_position == "last" else "")
+            + f"}} >> {log}\n"
+            "exit 7\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+    @pytest.mark.parametrize("refusal_position", ["first", "last"])
+    def test_a_refusal_is_found_among_thousands_of_marker_lines(
+        self, sandbox, refusal_position: str
+    ) -> None:
+        """Round 4c-7, finding C-1: the pipeline returned 141 on a MATCH.
+
+        `printf … | grep -E … | grep -qiE …` under `set -o pipefail`: the
+        quiet grep exits at its first match, the upstream grep dies of
+        SIGPIPE, and the matched pipeline reports 141 — so the `if` took
+        the false branch and a real corruption signal was reported "safe to
+        retry". It needed more than a pipe buffer of marker-level output
+        after the refusal, which is the ordinary regime: the deployed log
+        holds 4,658 `ERROR :` lines in 2.5 MB.
+
+        Reproduced before the fix at exactly this size (1,000 trailing
+        lines gave exit 2; 100 gave 3).
+        """
+        self._rclone_writing_many(
+            sandbox, refusal_position=refusal_position, filler=1000
+        )
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 3, (
+            "a genuine --immutable refusal was classified 'safe to retry' "
+            "because the classifier's pipeline died of SIGPIPE"
+        )
+        assert "ABORTED" in result.stdout + result.stderr
+
+    def test_thousands_of_marker_lines_without_a_refusal_stay_retryable(
+        self, sandbox
+    ) -> None:
+        """The negative control at the same scale."""
+        self._rclone_writing_many(
+            sandbox, refusal_position="none", filler=1000
+        )
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2
+        assert "safe to retry" in result.stdout + result.stderr
+
+    # ------------------------------------------------------------------
+    # The derived catalogue: the one file that is mutable by design
+    # ------------------------------------------------------------------
+
+    def test_the_immutable_copy_excludes_the_root_catalogue(
+        self, sandbox
+    ) -> None:
+        """CATALOG.json is rebuilt from disk, so --immutable refuses it.
+
+        Since 2026-09-09 10:28 every daily push exited 3 over a file whose
+        change is expected; before the flag the log shows it as "Copied
+        (replaced existing)" on every run.
+        """
+        self._with_catalogue(sandbox)
+
+        assert self._run(sandbox).returncode == 0
+
+        argv = self._argv(sandbox, "copy")
+        assert "--exclude" in argv
+        assert "/CATALOG.json" in argv, (
+            f"the immutable copy still carries the catalogue: {argv}"
+        )
+        # Anchored at the transfer root, so a session directory containing
+        # its own CATALOG.json stays under the immutable rule.
+        assert "CATALOG.json" not in argv, (
+            "the exclusion is unanchored and would cover nested files too"
+        )
+
+    def test_the_catalogue_is_pushed_without_immutable(
+        self, sandbox
+    ) -> None:
+        """A replace is the intent for the index, and only for the index."""
+        self._with_catalogue(sandbox)
+
+        assert self._run(sandbox).returncode == 0
+
+        argv = self._argv(sandbox, "copyto")
+        assert argv[0] == "copyto"
+        assert "--immutable" not in argv, (
+            "the catalogue push carries --immutable, which is what broke "
+            "the daily run in the first place"
+        )
+        assert argv[-2].endswith("/CATALOG.json")
+        assert argv[-1].endswith(":pa-cc-archives/CATALOG.json")
+        # The same log/stats/s3 flags as the bulk copy.
+        for flag in ("--log-format", "--s3-no-check-bucket", "--log-file"):
+            assert flag in argv, f"{flag} missing from the catalogue push"
+
+    def test_the_catalogue_is_not_pushed_when_the_copy_fails(
+        self, sandbox
+    ) -> None:
+        """The index must never describe objects that failed to upload."""
+        self._with_catalogue(sandbox)
+        self._rclone_writing(
+            sandbox, "2026/09/09 12:00:00 ERROR : x: dial tcp: lookup failed",
+            exit_code=7,
+        )
+
+        result = self._run(sandbox)
+
+        assert result.returncode == 2
+        assert not self._ran(sandbox, "copyto"), (
+            "the catalogue was published over a failed archive copy"
+        )
+
+    def test_an_absent_catalogue_is_skipped_quietly(self, sandbox) -> None:
+        """An archive that has never been catalogued is not an error."""
+        result = self._run(sandbox)
+
+        assert result.returncode == 0
+        assert not self._ran(sandbox, "copyto")
+        assert "nothing to publish" in result.stdout + result.stderr
+
+    def test_a_catalogue_push_failure_is_transport_never_corruption(
+        self, sandbox
+    ) -> None:
+        """No --immutable on that step, so no corruption signal to read."""
+        self._with_catalogue(sandbox)
+        sandbox.rclone.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "version" ]]; then echo "rclone v1.74.2"; exit 0; fi\n'
+            'if [[ "$1" == "listremotes" ]]; then echo "r2archives:"; exit 0; fi\n'
+            f'printf "%s\\n" "$@" > {sandbox.argv_log}.$1\n'
+            'if [[ "$1" == "copyto" ]]; then\n'
+            '  echo "2026/09/09 12:00:00 ERROR : CATALOG.json: Source and '
+            'destination exist but do not match: immutable file modified" '
+            f'>> {sandbox.pa_dir}/logs/r2-push.log\n'
+            "  exit 7\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        sandbox.rclone.chmod(0o755)
+
+        result = self._run(sandbox)
+
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, (
+            "a catalogue push failure was classified as corruption; that "
+            "step carries no --immutable, so it cannot be one"
+        )
+        assert "only the derived index is stale" in combined
+        assert "ABORTED" not in combined
+
+    def test_the_dry_run_previews_both_steps(self, sandbox) -> None:
+        self._with_catalogue(sandbox)
+
+        result = self._run(sandbox, "--dry-run")
+
+        assert result.returncode == 0
+        assert "--dry-run" in self._argv(sandbox, "copy")
+        assert "--dry-run" in self._argv(sandbox, "copyto")
+        combined = result.stdout + result.stderr
+        assert "DRY-RUN copy" in combined
+        assert "DRY-RUN copyto CATALOG.json" in combined
 
     def test_a_transport_failure_still_exits_two(self, sandbox) -> None:
         """The positive control: an ordinary failure stays retryable."""
