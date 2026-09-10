@@ -1622,7 +1622,9 @@ rows (4baee34, 093f0bc, 4d5d94c, 5bdcdfd, 6b14323); the squash commit on
 main is clean. Awaiting the ticket's reply; verify by a 404 on a commit
 URL. Other clones may still hold the branch (zbook to check).
 
-1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
+1. **H1 — extraction drops everything before the last 30 messages.
+   DECIDED 2026-09-10: chunking approved (inbox row captured; needs its own
+   PR and re-audit).** Fix is to
    process the window in chunks of 30, which multiplies Haiku calls on the 5% of
    firings that need it (never more than ten calls for the largest window seen).
    Approve the spend, or choose a larger single window.
@@ -1637,7 +1639,7 @@ URL. Other clones may still hold the branch (zbook to check).
    sanitising NUL will let 48+ sessions sync on the next run. No decision needed
    unless you want to inspect the two affected archive files first.
 
-4. **D4 — the tripwire's `Claude-Session` exemption.** A Claude-session
+4. **D4 — the tripwire's `Claude-Session` exemption. DECIDED 2026-09-10: keep.** A Claude-session
    commit that credits the Codex agent as co-author (every reviewed patch)
    would otherwise trip the wire on every machine until acked there, since
    the ack file is per machine. The exemption is a one-line opt-out that
@@ -1647,7 +1649,7 @@ URL. Other clones may still hold the branch (zbook to check).
    and ack each such commit on each machine.
 
 5. **D5 — should the daily sync push unpushed parent-repository commits
-   (S24)?** Today a parent commit with an unchanged data pointer sits
+   (S24)? DECIDED 2026-09-10: leave as is.** Today a parent commit with an unchanged data pointer sits
    unpushed until something else pushes. Pushing it would publish whatever
    another session committed but chose not to push. Options: leave as is
    (recommended, since the hub rule is push-after-commit anyway), or push
