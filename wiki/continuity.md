@@ -2420,7 +2420,16 @@ loose ends tied up so work can return to the GPT integration.
   sides.** Next checkpoint in the plan: the scoped-subpath acceptance
   diagnostic with its missing-surface denial control (Astra's, with
   Shawn present); no permission, admission, or instruction install
-  changed today.
+  changed today. Evening: Astra, told by Shawn to prepare acceptance as
+  far as possible, published gpt-hub PR #7 (scoped-read diagnostic,
+  2a66011); independent review verdict merge — the transformation never
+  widens a grant (expanding the prepared report's map bases reproduces
+  the baseline exactly), production_acceptance is hard-wired false on
+  every diagnostic path, no protected surface in the diff; three
+  follow-ups (the sibling-write control unpinned and unable to record
+  false; a narrow except in run_variant) and a note on reading a
+  diagnostic-blocked result. "#7 is yours to merge" for the morning; the
+  host comparison remains Shawn's to run.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
