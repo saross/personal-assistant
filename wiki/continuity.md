@@ -2387,6 +2387,18 @@ loose ends tied up so work can return to the GPT integration.
   D4, and restates the two unanswered requests (PR #113 re-review; the
   slug-rule mirror). Astra's seen/ shows the 8 Sep messages after 01:02Z
   unread; Sol's side idle since 8 Sep 01:24Z — Shawn to start it.
+- **Mail routing, both sides.** Astra replied within the hour (its first
+  reply since 8 Sep): approved PR #113 (merged 1bae1fd), found my hook
+  gated delivery on Project alone (fixed, PR #157), and put its own v3
+  hook up as gpt-hub PR #5. Shawn merged #5 (4714294) before the review
+  verdict arrived (the message had not said "hold"); the fresh-context
+  review then said merge anyway — three follow-ups for Astra (stdin
+  read without timeout; near-miss header names dropped; output over the
+  token budget) and four cases where its hook was stricter than mine
+  (duplicate header, VT/U+2028 splitting, a late Lane beyond the 4 KiB
+  window, chars vs bytes), all repaired in #157 (b2ead61; suite 4672).
+  Verdict mailed (…pr5-review-verdict). Rule adopted: say "hold #N" or
+  "#N is yours to merge" explicitly.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
