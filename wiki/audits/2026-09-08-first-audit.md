@@ -846,6 +846,15 @@ Open, each with its verdict so far:
   returned payloads into `load_corpus_space`, an explicit list, an AST
   non-emptiness assertion) plus the phase-5 argument-set assertion; PR
   #151 stays open on `claude/audit-round4g-5` in the 4g worktree.
+  Resumed 2026-09-10: round 4g-6 delivered (46a93b9, f53f10e): the scorer
+  hands the loader an explicit three-element list, unpacks the payloads,
+  and feeds them to `load_corpus_space` (signature now takes payloads;
+  `load_json` gone from the module); the phase-5 argument set restored;
+  derivation checked structurally for all nine constants across six
+  scripts; dead constants removed; the last layout literal derived; the
+  agent document's example completed with a doc-to-code test; the
+  newer-than-code stamp wording corrected. Coordinator suite, push, and
+  second re-audit pending.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
