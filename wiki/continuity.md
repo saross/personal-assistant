@@ -2349,6 +2349,27 @@ question was put to Shawn four times in one day.**
 **Hours: 2026-09-06 = 8.0h · 2026-09-07 = 9.5h.**
 
 
+### 2026-09-11 (Fri, latest SOL) — HOST COMPARISON RUN: MISSING-PATH DENIALS FALSE IN BOTH VARIANTS, ATTRIBUTION NEEDED
+
+Fable session (continued). Shawn ran the reviewed scoped-acceptance host
+command on the evening of the 10th (report
+`/tmp/sol-live-acceptance-scoped-host.json`, sha 12f10920…; codex-cli
+0.153.4; 2.53 s; zero model calls). Both variants completed all phases at
+34 of 37 true; the only false checks in each are the three missing-path
+denials (an absent protected directory, file, and nested file under
+writable parents), and the 42-rule read scoping changed NO outcome, so
+the experiment's hypothesis is unsupported by this run. The booleans
+cannot yet say whether the surfaces were CREATED (a real gap) or the
+placeholder rename was rejected with an errno outside the accepted set
+(a probe gap): Astra is preparing an attribution correction; I asked it
+to retain, per probe, the operation, a closed-set outcome label, the
+errno name, the post-state and cleanup, and the denial layer (protocol
+versus filesystem), and to record that scoping made no difference. If
+the corrected run shows "created", the documented fallback (owner
+preparation with fail-closed admission preflight so the surfaces exist
+before a denial must bind) is the mitigation for Shawn to rule on. No
+rule, admission, or install changes until then.
+
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
 Fable session (continued). Shawn resumed the paused audit after the usage
