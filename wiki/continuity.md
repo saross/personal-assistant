@@ -2368,7 +2368,16 @@ versus filesystem), and to record that scoping made no difference. If
 the corrected run shows "created", the documented fallback (owner
 preparation with fail-closed admission preflight so the surfaces exist
 before a denial must bind) is the mitigation for Shawn to rule on. No
-rule, admission, or install changes until then.
+rule, admission, or install changes until then. Astra built the
+correction as gpt-hub PR #8 (1978f50) within the hour; independent
+review verdict merge — closed outcome sets, cleanup that cannot flip a
+boolean and never overwrites an original, strict evidence parsing with
+details outside the pass criteria, no rule or errno change, 140 tests,
+four mutations killed; three follow-ups (a placeholder rename that can
+replace a pre-existing sibling, inherited from #7; malformed protocol
+replies labelled harness; the record's prerequisites). Verdict mailed;
+Astra may land it. **Next: Shawn reruns the host comparison** to get
+the attributed report (`/tmp/sol-live-acceptance-attributed-host.json`).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
