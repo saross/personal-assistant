@@ -518,39 +518,61 @@ def test_the_scorer_reads_no_phase_file_after_the_check():
 # Round 4g-5 item L-b2 — one base moves the WHOLE experiment
 # ---------------------------------------------------------------------------
 
-def test_every_script_derives_the_experiment_root_from_the_shared_base():
-    """A "second experiment" must not be assembled half in each directory.
+#: Every script that names an experiment path, and the constant it uses.
+_ROOT_CONSTANTS = (
+    ("efficacy_build_judge_tasks.py", "JUDGE_DIR"),
+    ("efficacy_build_judge_tasks.py", "PRIVATE_DIR"),
+    ("efficacy_build_judge_tasks.py", "KEY_DIR"),
+    ("efficacy_build_prompts.py", "EXPERIMENT_DIR"),
+    ("efficacy_build_reference.py", "EXPERIMENT_DIR"),
+    ("efficacy_analyse.py", "DEFAULT_EXPERIMENT_DIR"),
+    ("efficacy_score.py", "DEFAULT_EXPERIMENT_DIR"),
+    ("efficacy_score_judges.py", "JUDGE_DIR_DEFAULT"),
+    ("efficacy_score_judges.py", "KEY_DIR_DEFAULT"),
+)
 
-    Repointing the base used to move --judge-dir and --key-dir only:
-    --passages-dir and four other scripts kept their own hard-coded copy of
-    the root, so a second experiment would have written its passages,
-    prompts, scores and analysis into the first one. The mutation this kills:
-    restoring any of those hard-coded roots (each assertion below fails
-    against a literal path, since the shared helper is what they are compared
-    with).
-    """
-    style_support = load_style_module("style_support")
-    root = style_support.experiment_root()
+#: The style_support helpers that derive a path from the shared base.
+_LAYOUT_HELPERS = {"experiment_root", "judge_dir", "private_dir",
+                   "judge_key_dir", "passages_dir"}
 
-    assert load_style_module("efficacy_build_judge_tasks").EXP == root
-    assert load_style_module("efficacy_build_prompts").EXPERIMENT_DIR == root
-    assert load_style_module("efficacy_build_reference").EXPERIMENT_DIR == root
-    assert load_style_module("efficacy_analyse").DEFAULT_EXPERIMENT_DIR == root
-    # efficacy_score imports numpy through the Phase 5 evaluator, so its
-    # constant is read from the source rather than by importing it.
+
+def _module_constant_value(filename: str, name: str):
+    """Return the AST of the value assigned to a module-level constant."""
     import ast
 
     from style_test_helpers import SCRIPTS_DIR
 
-    source = (SCRIPTS_DIR / "efficacy_score.py").read_text(encoding="utf-8")
-    assignment = next(
-        node for node in ast.parse(source).body
-        if isinstance(node, ast.Assign)
-        and any(getattr(t, "id", None) == "DEFAULT_EXPERIMENT_DIR"
-                for t in node.targets)
-    )
-    assert isinstance(assignment.value, ast.Call)
-    assert assignment.value.func.attr == "experiment_root"
+    source = (SCRIPTS_DIR / filename).read_text(encoding="utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", None) == name for target in node.targets):
+            return node.value
+    raise AssertionError(f"{filename} no longer defines {name}")
+
+
+def test_every_experiment_path_is_derived_not_spelled_out():
+    """Derivation, asserted structurally rather than by comparing values.
+
+    Comparing the constant with the helper's RESULT passes just as happily
+    when the constant is a literal that spells the same path — which is how
+    reverting three of these to their hard-coded strings survived (round
+    4g-6, M2). What has to hold is that each constant is *computed* from the
+    shared base, so repointing that base moves it. The mutation this kills:
+    replacing any of these with a literal path.
+    """
+    import ast
+
+    for filename, name in _ROOT_CONSTANTS:
+        value = _module_constant_value(filename, name)
+        calls = [node for node in ast.walk(value)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in _LAYOUT_HELPERS
+                 and getattr(node.func.value, "id", None) == "style_support"]
+        assert calls, (
+            f"{filename}:{name} does not derive from style_support's layout "
+            "helpers, so repointing the experiment root would not move it"
+        )
 
 
 def test_the_passages_directory_moves_with_the_base(monkeypatch, tmp_path):

@@ -57,7 +57,6 @@ def _phase5():
     return p5
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 #: Derived from style_support so that repointing one base moves EVERY path
 #: in the experiment together (round 4g-5, item L-b2). It did not: the base
 #: moved --judge-dir and --key-dir while --passages-dir and four other

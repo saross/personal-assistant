@@ -60,14 +60,7 @@ import style_support  # noqa: E402
 from efficacy_build_prompts import strip_citations  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-#: Derived from style_support so that repointing one base moves EVERY path
-#: in the experiment together (round 4g-5, item L-b2). It did not: the base
-#: moved --judge-dir and --key-dir while --passages-dir and four other
-#: scripts kept their own hard-coded copy, so a "second experiment" would
-#: have been assembled half in one directory and half in another.
-EXP = style_support.experiment_root()
 EXTRACTED = REPO_ROOT / "data/style-corpus/extracted"
-PASSAGES = style_support.passages_dir()
 #: The judge and key locations come from `style_support`, which is also where
 #: `efficacy_score_judges.py` reads them: one description of the layout, so a
 #: move cannot leave the writer and the reader disagreeing (round 4g-3 item 1;

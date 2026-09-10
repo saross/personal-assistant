@@ -156,8 +156,16 @@ previous one, or (c) the user explicitly requests a fresh extraction.
    means a run started that bundle and did not finish it, so `body.md`
    may be present but the rest partial; the second means extraction
    failed and the file records why. Either way the bundle is not corpus
-   evidence: re-extract that key (`extract_corpus.py --keys <key>`) or
-   leave it out of the run, and say in the report which keys were
+   evidence: re-extract that key —
+
+   ```bash
+   python ~/personal-assistant/scripts/style-analyser/extract_corpus.py \
+       --manifest <the Zotero export used for the corpus> \
+       --output-dir ~/personal-assistant/data/style-corpus/extracted \
+       --keys <key>
+   ```
+
+   — or leave it out of the run, and say in the report which keys were
    skipped and why. `extract_corpus.py` warns about leftover markers
    before it starts, but nothing removes them for you.
 2. **Check QA flags** in each `qa.json`. The wrapper flags

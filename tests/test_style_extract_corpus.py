@@ -1579,3 +1579,91 @@ def test_the_run_warns_about_leftovers_before_extracting(tmp_path, capsys,
                             "--output-dir", str(output_dir)])
 
     assert "AAAA1111" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Round 4g-6 low — the document and the code must agree
+# ---------------------------------------------------------------------------
+
+AGENT_DOC = (Path(__file__).resolve().parent.parent / "agents"
+             / "corpus-style-analyser-v2.md")
+
+
+def test_the_document_names_the_markers_the_code_writes():
+    """A document naming a marker the code does not write helps nobody.
+
+    The agent is told to skip a bundle carrying either marker, so the two
+    filenames have to be the ones extract_one actually writes. The mutation
+    this kills: renaming a marker in the code (or the document) without the
+    other following.
+    """
+    doc = AGENT_DOC.read_text(encoding="utf-8")
+
+    for name in extract_corpus.MARKER_FILENAMES:
+        assert name in doc, f"the document never mentions {name}"
+
+
+def test_the_documents_example_command_only_uses_real_flags():
+    """The example told the operator to run a command that cannot run.
+
+    `extract_corpus.py --keys <key>` omits --manifest and --output-dir, both
+    required, so following the document verbatim fails with a usage error.
+    The mutation this kills: an example naming a flag the parser does not
+    define, or omitting one the parser requires.
+    """
+    import re
+
+    doc = AGENT_DOC.read_text(encoding="utf-8")
+    block = re.search(r"```bash\n(.*?extract_corpus\.py.*?)```", doc, re.S)
+    assert block, "the document no longer shows how to re-extract a key"
+    used = set(re.findall(r"--[a-z-]+", block.group(1)))
+
+    options = _extract_corpus_options()
+
+    assert used <= set(options), (
+        f"the example uses flags the parser does not define: "
+        f"{sorted(used - set(options))}"
+    )
+    required = {flag for flag, is_required in options.items() if is_required}
+    assert required <= used, (
+        f"the example omits required flags: {sorted(required - used)}"
+    )
+
+
+def _extract_corpus_options() -> dict[str, bool]:
+    """Map each ``--flag`` extract_corpus defines to whether it is required.
+
+    Read from ``main``'s own ``add_argument`` calls: the parser is built and
+    parsed in one breath there, so the calls are replayed into a recording
+    parser instead. Nothing in ``argparse`` is monkeypatched — patching the
+    module's ``ArgumentParser`` name makes its own ``super()`` lookup
+    recurse.
+    """
+    import argparse
+    import ast
+
+    recorded: dict[str, bool] = {}
+
+    class RecordingParser(argparse.ArgumentParser):
+        """Notes each option and whether the parser requires it."""
+
+        def add_argument(self, *args, **kwargs):
+            for name in args:
+                if isinstance(name, str) and name.startswith("--"):
+                    recorded[name] = bool(kwargs.get("required"))
+            return super().add_argument(*args, **kwargs)
+
+    parser = RecordingParser(description="probe")
+    source = Path(extract_corpus.__file__).read_text(encoding="utf-8")
+    main_fn = next(node for node in ast.parse(source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "main")
+    for node in main_fn.body:
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "add_argument"):
+            call = ast.Expression(body=node.value)
+            ast.fix_missing_locations(call)
+            eval(compile(call, "<parser>", "eval"),  # noqa: S307 — own source
+                 {"ap": parser, "Path": Path})
+    assert recorded, "no options were recovered from main()"
+    return recorded
