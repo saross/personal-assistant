@@ -1207,7 +1207,22 @@ Open, each with its verdict so far:
   pinned by the pre-existing test, not the new one). **DEFERRED** (stop
   point 2026-09-09 16:4x): PR #147 stays open on `claude/audit-round4c-5`
   in the 4c worktree; round 4c-7 takes C-1, M-1, M-2, then a third
-  re-audit.
+  re-audit. Resumed 2026-09-10: round 4c-7 delivered (e813336, 9d5e404):
+  one `grep -qE` over a here-string, no pipe, reproduced at every scale
+  (1,000 trailing marker lines: 2 before, 3 after); a repository-scope
+  lint (`tests/test_pipefail_grep_lint.py`, importing the daily-sync
+  tokeniser) that on its first run found two MORE `| grep -q` sites in
+  the same script (`df … | tail -1 | grep -q` at :179 and `listremotes |
+  grep -q` at :184), both fixed rather than allow-listed; the attested
+  levels separated from the defensive match; `--log-format date,time`
+  pinned; the dry run prints the sizeless remedy. And the LIVE fix Shawn
+  approved: `CATALOG.json` is excluded from the immutable copy
+  (`--exclude "/CATALOG.json"`) and pushed afterwards with `rclone
+  copyto` without `--immutable`; the copyto runs only after a successful
+  copy, its failure is exit 2 ("the archive copy SUCCEEDED, only the
+  derived index is stale"), an absent catalogue is skipped, and the dry
+  run previews both. Coordinator suite, push, and third re-audit
+  pending.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
