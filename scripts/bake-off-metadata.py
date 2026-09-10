@@ -405,7 +405,14 @@ def assemble_requests(
     _ = prompt_path.read_text()
 
     requests: list[SessionRequest] = []
-    for entry in manifest["sessions"]:
+    for position, entry in enumerate(manifest["sessions"], 1):
+        # Validate BEFORE anything derives from the id: build_custom_id
+        # would otherwise raise AttributeError on a list or a dict, several
+        # frames from the manifest that caused it.
+        validate_session_id(
+            entry.get("session_id"),
+            where=f"{manifest_path}: session {position}",
+        )
         transcript_text = extractor.extract_transcript_text(
             entry["transcript_path"]
         )
@@ -581,17 +588,23 @@ def _atomic_write(path: Path, text: str) -> None:
     or the whole new one — never a half-written response.
 
     Raises:
-        OSError: the write, the flush, or the rename failed. The message
-            names the file: this is called in a loop over a batch's
-            responses, and an unadorned "No space left on device" leaves the
-            operator without the one fact they need — which response is
-            missing.
+        OSError: the directory could not be made, the temp file could not be
+            created, or the write, flush, or rename failed. The exception
+            keeps its original type and errno and gains the target path:
+            this is called in a loop over a batch's responses, and an
+            unadorned "No space left on device" leaves the operator without
+            the one fact they need — which response is missing.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle_fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
+    handle_fd: int | None = None
+    tmp_name: str | None = None
     try:
+        # Inside the try: mkdir and mkstemp are the likeliest places for a
+        # full disk to bite, and they were the two lines whose failure said
+        # nothing about which file was being written.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle_fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             # Flush to the device before the rename. os.replace is atomic
@@ -602,13 +615,22 @@ def _atomic_write(path: Path, text: str) -> None:
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except OSError as exc:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise OSError(f"could not write {path}: {exc}") from exc
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+        # Re-raise the SAME class with errno intact, rather than collapsing
+        # every failure into a bare OSError: a caller distinguishing
+        # FileNotFoundError from PermissionError, or reading errno, must
+        # still be able to. The path goes into strerror, so the type and
+        # the code survive and the message still names the file.
+        raise type(exc)(
+            exc.errno, f"{exc.strerror}: while writing {path}"
+        ) from exc
     except BaseException:
         # Anything else (a KeyboardInterrupt, a caller's TypeError from
         # serialisation) is not a write failure: clean up the temp file and
         # let it through unchanged rather than relabelling it.
-        Path(tmp_name).unlink(missing_ok=True)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
         raise
     # After the rename, not before: it is the directory entry that needs
     # flushing, and only once the entry exists.
@@ -806,7 +828,9 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def state_manifest_path(state: dict[str, Any]) -> str | None:
+def state_manifest_path(
+    state: dict[str, Any], *, report: bool = False
+) -> str | None:
     """Return the manifest path a batch state records, if it is usable.
 
     One guard for every reader. The state is a JSON file an operator can
@@ -817,7 +841,7 @@ def state_manifest_path(state: dict[str, Any]) -> str | None:
     path = state.get("manifest_path")
     if isinstance(path, str) and path:
         return path
-    if path is not None:
+    if path is not None and report:
         # Not silence: a state whose manifest_path is a number or a list
         # behaves exactly like one that records nothing, and the operator
         # would otherwise have no way to tell those apart.
@@ -881,13 +905,24 @@ def resolve_manifest(
         nothing readable was found, so a remedy line names the placeholder
         rather than a path already known to be broken.
     """
-    recorded = state_manifest_path(state)
+    recorded = state_manifest_path(state, report=True)
     supplied = str(manifest_path) if manifest_path is not None else None
 
     if supplied is not None:
         found = _read_manifest_session_ids(supplied)
-        if found is not None:
+        if found:
             return found, supplied
+        # An empty result is as useless as an unreadable one, and used to
+        # short-circuit here: a manifest that parsed but listed no session
+        # defeated a perfectly good recorded one in silence, so every
+        # stranded result "looked like a digest" and the remedy line named
+        # the very file the rebuild path then refuses.
+        if found is not None:
+            print(
+                f"[haiku] the supplied --manifest ({supplied}) lists no "
+                "sessions, so it can name nothing.",
+                file=sys.stderr,
+            )
         if recorded is not None and recorded != supplied:
             print(
                 f"[haiku] falling back to the manifest recorded in the batch "
@@ -896,21 +931,14 @@ def resolve_manifest(
                 file=sys.stderr,
             )
             found = _read_manifest_session_ids(recorded)
-            if found is not None:
+            if found:
                 return found, recorded
         return set(), None
 
     if recorded is None:
         return set(), None
     found = _read_manifest_session_ids(recorded)
-    return (found, recorded) if found is not None else (set(), None)
-
-
-def known_session_ids(
-    state: dict[str, Any], manifest_path: Path | None = None
-) -> set[str]:
-    """The session ids ``resolve_manifest`` finds; kept for callers wanting only those."""
-    return resolve_manifest(state, manifest_path)[0]
+    return (found, recorded) if found else (set(), None)
 
 
 def custom_id_lookup(session_ids: Iterable[str]) -> dict[str, str]:
@@ -1164,6 +1192,8 @@ def haiku_submit(
     # session from the state map and write one session's output under
     # another's name — either way, after the batch had been paid for.
     for position, request in enumerate(requests, 1):
+        # Every request, not a sample: a manifest whose SECOND session
+        # carries an unusable id would otherwise be submitted and billed.
         validate_session_id(
             request.session_id, where=f"manifest session {position}"
         )
@@ -2443,7 +2473,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    requests = assemble_requests(args.manifest, args.prompt)
+    try:
+        # Before the cost gate, deliberately: an unusable session id is a
+        # manifest problem, and being told about it after approving a
+        # billed run -- as a traceback -- helps nobody.
+        requests = assemble_requests(args.manifest, args.prompt)
+    except SessionIdError as exc:
+        print(f"{args.manifest} cannot be used: {exc}", file=sys.stderr)
+        return 2
     if not requests:
         # An empty manifest is a mistake upstream, not a run with nothing to
         # do: say so and stop before creating a provider directory or a
