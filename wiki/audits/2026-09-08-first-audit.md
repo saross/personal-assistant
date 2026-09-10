@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-one PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -754,7 +754,8 @@ and glue); #138 (machine glue, two re-audits); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140, #145, #152
-(memory readers and anchors); #132, #135, #139, #148 (daily-sync lows);
+(memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
+lows);
 #136, #141
 (archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
 one);
@@ -846,6 +847,15 @@ Open, each with its verdict so far:
   returned payloads into `load_corpus_space`, an explicit list, an AST
   non-emptiness assertion) plus the phase-5 argument-set assertion; PR
   #151 stays open on `claude/audit-round4g-5` in the 4g worktree.
+  Resumed 2026-09-10: round 4g-6 delivered (46a93b9, f53f10e): the scorer
+  hands the loader an explicit three-element list, unpacks the payloads,
+  and feeds them to `load_corpus_space` (signature now takes payloads;
+  `load_json` gone from the module); the phase-5 argument set restored;
+  derivation checked structurally for all nine constants across six
+  scripts; dead constants removed; the last layout literal derived; the
+  agent document's example completed with a doc-to-code test; the
+  newer-than-code stamp wording corrected. Coordinator suite, push, and
+  second re-audit pending.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -975,7 +985,17 @@ Open, each with its verdict so far:
   conjunct), gates the dry-run remedy on the state a real run would
   reach, tests the empty-output-and-failed-query cell and a duplicated
   layer, and tightens the `char()` extraction; then re-audit; PR #149
-  stays open on `claude/audit-round4d-6` in the 4d worktree.
+  stays open on `claude/audit-round4d-6` in the 4d worktree. Resumed
+  2026-09-10: round 4d-7 delivered (e6e8686, 72f7f6f): the destructive
+  advice emitted from exactly one site (`say_data_remedy`), pinned at
+  source level, and the test asserts the sentence across stdout and
+  stderr; a `WOULD_INIT` flag makes a fresh-clone preview say the init
+  would supply the file, print no remedy, and not claim a real run would
+  refuse (the companion test runs that state for real); the failed-query
+  test moved to the front of `say_data_remedy`; `assert_composed`
+  requires each marker exactly once; the trim-set extraction parses
+  whole argument lists and refuses non-integer literals. Coordinator
+  suite, push, and second re-audit pending.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1029,8 +1049,19 @@ Open, each with its verdict so far:
   shortening commit and the first unmeasurable merge named). The agent
   records two fixture traps its own earlier tests caught. Merged with
   main (92fc79e), coordinator suite 4468 passed, 2 skipped, 19
-  deselected, exit 0; **PR #153, open, re-audit DEFERRED** (stop
-  point).
+  deselected, exit 0; **PR #153, merged c713cd5** 2026-09-10 (re-audit
+  verdict merge: the script byte-identical, every claim re-checked, the
+  four script-guard mutations each killed by exactly the named test, the
+  L6 trap genuinely closed). **DEFERRED** lows from that re-audit: the
+  `#`-at-word-start rule (the tokeniser handles `${#a[@]}`, `${x#y}`, and
+  `foo#bar` correctly but no fixture pins it — `if char == "#":` survives
+  4,467 tests while silently deleting 1,430 characters of the real
+  script's statement stream); `_pipes_before`'s `||` exclusion unpinned;
+  `;#` and `&&#` are comments the word-start rule misses (latent);
+  first-match opener search rejects a quoted opener rather than finding
+  the first unquoted one (over-report); quote state resets per line
+  though ten real lines end mid-quote; `_pipes_before` ignores quoting
+  and `;` (noise).
 - Round **4f-4** delivered (five commits a0d35f0-c139769 on
   `claude/audit-round4f-4`): a lone checkout is not a repository set;
   excluded repositories reported in the trend row and in `[F]`; an excluded
