@@ -1248,8 +1248,18 @@ Open, each with its verdict so far:
   copy, its failure is exit 2 ("the archive copy SUCCEEDED, only the
   derived index is stale"), an absent catalogue is skipped, and the dry
   run previews both. Merged with main (032d48d), coordinator suite 4541
-  passed, 19 deselected, exit 0; pushed; third re-audit of PR #147
-  running.
+  passed, 19 deselected, exit 0; pushed. Third re-audit verdict merge:
+  no pipe anywhere in the classifier, the scale table reproduced (3 at
+  every size, 2 with no refusal; a bash here-string above the pipe
+  buffer is a temp file, so nothing can be SIGPIPEd), the lint real and
+  the repository clean, every attestation checked against the deployed
+  log, the copyto argv right and a copyto failure unable to reach exit 3.
+  One test-integrity medium: the copy-before-copyto ordering guard is
+  hollow (the `_rclone_writing` stub never records argv), taken in a
+  closing round 4c-8 with two dead-comment/dead-assignment lows; deferred
+  lows: no fixture exceeds ten manifest entries; the lint skips
+  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Merge on a green
+  suite after the one-line fix.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
