@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-five PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-six PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -759,7 +759,7 @@ lows);
 #136, #141, #147
 (archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
 then one, then two);
-#142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
+#142, #146, #150, #154, #156 (bake-off rounds 4e-5 to 4e-9).
 
 Open, each with its verdict so far:
 
@@ -1396,7 +1396,19 @@ Open, each with its verdict so far:
   rejected as a leak); `assemble_requests` validates first;
   `known_session_ids` removed; the help slice scoped within the options
   section. Merged with main (a163fcb), coordinator suite 4550 passed,
-  19 deselected, exit 0; **PR #156**; re-audit running.
+  19 deselected, exit 0; **PR #156, merged** 2026-09-10 (re-audit
+  verdict merge: every claimed behaviour reproduced; the remedy never
+  names a file the rebuild refuses; validation before `create` and before
+  the cost gate; the fsync target pinned by inode). DEFERRED: the
+  exception-type test passes for the wrong reason (`OSError(ENOENT, …)`
+  auto-maps to `FileNotFoundError`, so `raise OSError(` survives); the
+  RECORDED-manifest side of `if found:` is unpinned and silent (an empty
+  recorded manifest yields the placeholder with no stderr, unlike the
+  supplied side); `exc.filename` dropped by the two-argument re-raise;
+  an errno-less `OSError` loses its message; `setdefault` treats a
+  malformed recorded path as an existing record; the assemble error's
+  position wording unpinned; two tests assign `sys.modules` directly.
+  The bake-off branch is closed for this cycle.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
