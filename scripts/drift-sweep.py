@@ -75,6 +75,16 @@ FULL_BACKSET_DAYS = 100_000
 # 2026-06-04 → 2026-06-06); 25 % gives headroom before alerting.
 DEFAULT_ALERT_THRESHOLD = 25.0
 
+# The floor that applies when the trend log has nothing to compare against.
+# Discovery on this machine finds ~36 repositories; the personal-assistant
+# checkout and its data submodule are two of them, so a run that discovers
+# fewer than three has not found a single project repository and is resolving
+# the whole corpus against the assistant's own pair. Three is deliberately far
+# below the real number: it is a floor against a broken machine, not a check
+# that every repository is present, and the recorded count takes over as soon
+# as one clean row exists (round 4f-5, finding M6).
+MIN_DISCOVERED_REPOS = 3
+
 # Above this share of ``pending`` verdicts the sweep is not measuring drift, it
 # is measuring its own inability to check: an unmounted mount, a missing git
 # binary, a locked index. Logging a trend row from such a run would put a
@@ -120,6 +130,12 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     # Start from a clean exclusion registry so the row below describes THIS
     # sweep, not one inherited from an earlier call in the same process.
     av.reset_unusable_repos()
+    # Ask every repository once, before any anchor is resolved. Resolution
+    # short-circuits on the first hit, so without this a repository is
+    # registered unusable only if some ref happens to reach it — and a sweep
+    # whose anchors resolve early reports an empty exclusion list beside an
+    # emptied mount (finding M1).
+    av.probe_repos(repos)
     basename_index = ta.build_basename_index(repos)
     # Memoise both ref-level resolvers: verify_file walks every repository and
     # spawns up to two git processes per repository, and the same ref recurs
@@ -151,7 +167,23 @@ def run_sweep(records: list[dict], *, as_of: datetime,
     # row recorded the full discovered count as though every repository had
     # answered (round 4f-4, finding M-b).
     result["unusable_repos"] = sorted(av.unusable_repos())
+    # ``repo_count`` is discovery-only and comparable across checkouts; this
+    # is the set resolution actually walked, which includes the PA_DIR
+    # augmentation and is therefore the set ``unusable_repos`` names from.
+    # Reporting only the first left a reader unable to tell whether an
+    # excluded path was even counted (round 4f-5, finding L9).
+    result["repos_consulted"] = len(repos)
     return result
+
+
+def pending_pct(total: int, pending: int) -> float:
+    """The share of the swept population we could not check, as a percentage.
+
+    One definition, used by :func:`trend_line`'s ``degraded`` judgement and
+    by ``main``'s reliability floor, so the row and the message that explains
+    it can never disagree.
+    """
+    return round(100 * pending / total, 1) if total else 0.0
 
 
 def trend_line(result: dict, *, as_of: datetime) -> dict:
@@ -179,7 +211,22 @@ def trend_line(result: dict, *, as_of: datetime) -> dict:
         # Repositories resolution could not consult. A run with a non-empty
         # list resolved against fewer repositories than ``repos`` claims, and
         # a reader comparing rows needs to know that (finding M-b).
-        "unusable": list(result.get("unusable_repos", [])),
+        "unusable": sorted(result.get("unusable_repos", [])),
+        # The set resolution walked, augmentation included, so a reader can
+        # place the ``unusable`` paths against a total (finding L9).
+        "consulted": result.get("repos_consulted", 0),
+        # ``unusable`` is the FACT; ``degraded`` is the judgement about
+        # whether it spoiled this run's numbers. Flagging on any exclusion
+        # meant one chronic stale directory under ~/Code marked every future
+        # row degraded, asterisked every point in [H] for ever, and starved
+        # the floor (round 4f-6, finding M-a). A run that excluded something
+        # and still checked almost everything is an ordinary row that names
+        # what it left out.
+        "degraded": bool(result.get("unusable_repos"))
+        and pending_pct(
+            result.get("anchored_in_window", 0),
+            (result.get("verdicts") or {}).get("pending", 0),
+        ) > MAX_PENDING_PCT,
     }
 
 
@@ -195,6 +242,13 @@ def last_repo_count(log_path: Path) -> int:
     log (written before the guards in finding M-a) does not mask a real floor
     recorded before it. Accepting zero would also make the newest such row
     stop the scan and return "no floor at all".
+
+    Degraded rows are NOT skipped. ``repos`` is the discovery-only count —
+    how many repositories were FOUND — and discovery is independent of
+    whether each one could then be consulted. Skipping them let three
+    consecutive degraded rows carrying ``repos: 10`` collapse the floor to
+    the built-in minimum (round 4f-6, finding M-b). What a degraded row must
+    not do is set the fail-rate comparison, and that is [H]'s business.
     """
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -240,10 +294,15 @@ def _render(record: dict) -> str:
     unusable = record.get("unusable") or []
     if unusable:
         lines.append(
-            f"Repositories EXCLUDED ({len(unusable)}) — resolution could not "
-            "consult these, so their anchors read pending:"
+            f"Repositories EXCLUDED ({len(unusable)} of "
+            f"{record.get('consulted', '?')}) — resolution could not consult "
+            "these, so their anchors read pending:"
         )
         lines.extend(f"  - {path}" for path in unusable)
+    if record.get("degraded"):
+        lines.append(
+            "This row is DEGRADED: the floor and the fail-rate trend skip it."
+        )
     return "\n".join(lines)
 
 
@@ -267,10 +326,12 @@ def main(argv: list[str] | None = None) -> int:
                               "is being recorded, so nothing can be corrupted."))
     parser.add_argument("--min-repos", type=int, default=None,
                         help=("Minimum repositories discovery must find, "
-                              "overriding the floor taken from the last "
-                              "logged sweep. Pass the current count to reset "
-                              "the floor after a repository is legitimately "
-                              "archived or removed; pass 0 to disable it."))
+                              "overriding the floor — which comes from the "
+                              "last clean sweep in the log, or from the "
+                              "built-in minimum when the log offers none. "
+                              "Pass the current count to reset the floor "
+                              "after a repository is legitimately archived "
+                              "or removed; pass 0 to disable it."))
     parser.add_argument("--json", action="store_true",
                         help="Emit the trend record as JSON.")
     args = parser.parse_args(argv)
@@ -283,15 +344,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[drift-sweep] ERROR: cannot read {args.memories}: {exc}",
               file=sys.stderr)
         return 2
-    # Floor precedence: an explicit --min-repos wins; otherwise a run that
-    # writes no trend row imposes none (there is no series to protect); and
-    # otherwise the last logged sweep's discovery-only count.
+    # Floor precedence: an explicit --min-repos wins, whatever it says; a run
+    # that writes no trend row imposes none (there is no series to protect);
+    # otherwise the last clean sweep's discovery-only count, and where the log
+    # offers none, the built-in minimum. Without that last clause a machine
+    # that discovers ONE repository swept, wrote fail_pct 100.0, exited 0 and
+    # set a floor of 1 (finding M6).
+    #
+    # The --no-log branch sets no source label: a floor of 0 can never be
+    # breached, so its label was unreachable (finding L8).
+    floor_source = "the built-in minimum"
     if args.min_repos is not None:
         floor, floor_source = args.min_repos, "--min-repos"
     elif args.no_log:
-        floor, floor_source = 0, "--no-log (no floor)"
+        floor = 0
     else:
-        floor, floor_source = last_repo_count(args.log_path), "the last logged sweep"
+        recorded = last_repo_count(args.log_path)
+        if recorded >= MIN_DISCOVERED_REPOS:
+            floor, floor_source = recorded, "the last logged sweep"
+        else:
+            # The minimum is an absolute floor, not a first-run default. One
+            # `--min-repos 1` on a one-repository machine wrote a clean row
+            # saying 1, and every later run then read that as the floor in
+            # silence (round 4f-6, finding L-b). --min-repos still overrides,
+            # but it has to be passed for the run that needs it.
+            floor = MIN_DISCOVERED_REPOS
+            if recorded > 0:
+                print(f"[drift-sweep] WARN: the last logged sweep recorded "
+                      f"{recorded} repositories, below the built-in minimum "
+                      f"of {MIN_DISCOVERED_REPOS}; using the minimum. Pass "
+                      f"--min-repos {recorded} if that count is correct.",
+                      file=sys.stderr)
     try:
         result = run_sweep(records, as_of=now, days=args.days, min_repos=floor)
     except ta.RepoSetShrunk as exc:
@@ -310,17 +393,36 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except ta.RepoSetUnavailable as exc:
         # Not a drift result: a discovery failure wearing one. Log nothing.
+        # There is deliberately NO override here, and the message says so:
+        # --min-repos 0 and --no-log are both refused, because a sweep with
+        # nothing to resolve against produces no information at any floor
+        # (finding L7).
         print(f"[drift-sweep] ERROR: sweep unreliable — {exc}; no trend row "
-              "written", file=sys.stderr)
+              "written. This one has no override: fix discovery (mount the "
+              "volume, clone the repositories) and re-run.", file=sys.stderr)
         return 2
     record = trend_line(result, as_of=now)
 
     # A sweep dominated by "pending" verdicts measured our own inability to
-    # check, not the corpus. Say so, and keep it out of the trend log.
+    # check, not the corpus. Say so, and keep it out of the trend log —
+    # UNLESS we already know why, in which case the honest record is a row
+    # that says so (finding M5, option b). A degraded row is written and
+    # flagged; last_repo_count and the fail-rate trend skip it, and [H] shows
+    # it as a gap. Option (a) — dropping the blocked refs from the
+    # denominator — was rejected: the resolver does not carry per-ref
+    # attribution, so it would need to be invented, and a row whose fail_pct
+    # was computed over a silently smaller population reads as an
+    # IMPROVEMENT, which is the mirror of the fabricated spike AN7 fought.
     total = record["total_anchored"]
-    pending_pct = round(100 * record["pending"] / total, 1) if total else 0.0
-    if pending_pct > MAX_PENDING_PCT:
-        print(f"[drift-sweep] ERROR: sweep unreliable — {pending_pct}% of "
+    unchecked_pct = pending_pct(total, record["pending"])
+    if unchecked_pct > MAX_PENDING_PCT and record["degraded"]:
+        print(f"[drift-sweep] WARN: {unchecked_pct}% of {total} anchored "
+              f"records could not be checked, with "
+              f"{len(record['unusable'])} repository/ies excluded; logging a "
+              "DEGRADED row (skipped by the floor and the trend)",
+              file=sys.stderr)
+    elif unchecked_pct > MAX_PENDING_PCT:
+        print(f"[drift-sweep] ERROR: sweep unreliable — {unchecked_pct}% of "
               f"{total} anchored records could not be checked (limit "
               f"{MAX_PENDING_PCT}%); no trend row written", file=sys.stderr)
         print(json.dumps(record, indent=2) if args.json else _render(record))
@@ -346,6 +448,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps(record, indent=2) if args.json else _render(record))
 
+    if record["degraded"]:
+        # A degraded run's fail_pct is computed over a population that
+        # includes refs nobody could check, which are counted as pending
+        # rather than failed — so the rate is DEFLATED and comparing it with
+        # the alert threshold answers a question about the mount, not the
+        # corpus (round 4f-6, finding L-d).
+        print("[drift-sweep] NOTE: alert threshold not applied to a degraded "
+              "run", file=sys.stderr)
+        return 2 if log_failed else 0
     if record["fail_pct"] > args.alert_threshold:
         print(f"[drift-sweep] ALERT: fail rate {record['fail_pct']}% exceeds "
               f"threshold {args.alert_threshold}%", file=sys.stderr)

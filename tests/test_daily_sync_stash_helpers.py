@@ -2545,34 +2545,67 @@ class TestMergeWithNoCorpusInAnyParent:
         assert "none of its parents holds the corpus" in written, written
 
 
-#: The functions that are allowed to run a quiet grep, and the reason
-#: each is safe: none of them has a producer on the far side of a pipe.
-#: Asserted as a SET rather than a count (audit 3, sixth re-audit): a
-#: decorative fifth site would restore vacuity to a count, and a correct
-#: refactor that moves one would fail it for no reason.
+#: The functions allowed to run a quiet grep, HOW MANY each may run, and
+#: the reason each is safe: none has a producer on the far side of a
+#: pipe. A whole-file count is vacuous (audit 3, sixth re-audit) — a
+#: decorative extra site restores it — and a per-function SET is too
+#: coarse (audit L3, seventh): deleting one of the two greps inside
+#: previously_recorded_stashes left the set unchanged and the suite
+#: green, though the path matching it does is what keeps a stale row
+#: from being blamed for a fresh conflict.
 _QUIET_GREP_SITES = {
-    "render_sync_gate",              # gate supersession, here-string
-    "previously_recorded_stashes",   # sidecar path matching, here-string
-    "has_bulk_rewrite_trailer",      # the trailer, here-string
+    "render_sync_gate": 1,             # gate supersession, here-string
+    "previously_recorded_stashes": 2,  # sidecar path matching, here-strings
+    "has_bulk_rewrite_trailer": 1,     # the trailer, here-string
 }
 
-#: `grep -q`, `grep -Fqx`, `grep --quiet` — every spelling of "tell me
-#: yes or no and stop reading" (audit 2, sixth re-audit).
-_QUIET_GREP = re.compile(r"\bgrep\s+(?:-[A-Za-z]*q|--quiet)")
+#: Every spelling of "tell me yes or no and stop reading" this lint has
+#: been shown to need (audit 2, sixth re-audit; audit L1, seventh):
+#: `grep -q`, `grep -Fqx`, `grep --quiet`, `grep --silent`, the flag
+#: after other flags as in `grep -E -q`, and the grep family — `egrep`,
+#: `fgrep`, `zgrep`. Not a claim to completeness: it is the set the
+#: evasion tests below hold it to, and a new spelling belongs in both.
+#: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"` — matched wherever it
+#: appears on the line, because a heredoc opener is routinely followed by
+#: redirections (`<<'PYEOF' >>"$LOG" 2>&1`). `<<<` is a here-STRING and
+#: opens nothing, so it is excluded explicitly.
+_HEREDOC_OPENER = re.compile(
+    r"(?<!<)<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'"
+    r'|"([A-Za-z_][A-Za-z0-9_]*)"'
+    r"|([A-Za-z_][A-Za-z0-9_]*))"
+)
+
+_QUIET_GREP = re.compile(
+    r"\b(?:z|e|f)?grep(?:\s+--?[A-Za-z-]+)*\s+(?:-[A-Za-z]*q|--quiet|--silent)"
+)
 
 
-def _script_statements() -> list[tuple[int, str, str]]:
+def _script_statements(
+    script: Path = DAILY_SYNC,
+) -> list[tuple[int, str, str]]:
     """
-    The script as `(line number, enclosing function, statement)` triples.
+    ``script`` as `(line number, enclosing function, statement)` triples.
 
     Continuation lines and lines ending in a pipe are joined, so a
     pipeline written across several lines is one statement — the shape
-    that walked through the previous line-at-a-time scan. Heredoc bodies
-    are skipped entirely: the embedded Python in this script is not shell
-    and must not be linted as though it were. A trailing inline comment
-    is dropped, so prose about the rule cannot satisfy or violate it.
+    that walked through the previous line-at-a-time scan. A trailing
+    inline comment is dropped, so prose about the rule can neither
+    satisfy nor violate it.
+
+    Heredoc bodies are skipped: the embedded Python in this script is not
+    shell and must not be linted as though it were. The opener is matched
+    BEFORE any redirection (audit M2, seventh re-audit) — the previous
+    pattern anchored the delimiter at end of line, and this script's one
+    heredoc is `<<'PYEOF' >>"$LOG_FILE" 2>&1 || log "…"`, so NO opener was
+    ever detected and that Python was linted as shell all along. It
+    passed only because it happens to contain no grep.
+
+    An opener is honoured only in COMMAND POSITION (audit L2): a `<<X`
+    inside a comment is prose, and treating it as an opener would swallow
+    the rest of the file — every site after it invisible, the lint green
+    and blind.
     """
-    lines = DAILY_SYNC.read_text(encoding="utf-8").splitlines()
+    lines = script.read_text(encoding="utf-8").splitlines()
     statements: list[tuple[int, str, str]] = []
     function = ""
     heredoc = ""
@@ -2583,9 +2616,11 @@ def _script_statements() -> list[tuple[int, str, str]]:
             if raw.strip() == heredoc:
                 heredoc = ""
             continue
-        opener = re.search(r"<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?\s*$", raw)
+        # Prose is not a command: a `<<X` in a comment opens nothing.
+        code_only = "" if raw.lstrip().startswith("#") else raw
+        opener = _HEREDOC_OPENER.search(code_only)
         if opener:
-            heredoc = opener.group(1)
+            heredoc = next(group for group in opener.groups() if group)
         name = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", raw)
         if name:
             function = name.group(1)
@@ -2616,6 +2651,16 @@ def _script_statements() -> list[tuple[int, str, str]]:
     return statements
 
 
+def _quiet_grep_offenders(script: Path) -> list[str]:
+    """Statements in ``script`` that pipe a producer into a quiet grep."""
+    offenders = []
+    for number, _function, statement in _script_statements(script):
+        match = _QUIET_GREP.search(statement)
+        if match and "|" in statement[: match.start()]:
+            offenders.append(f"{number}: {statement}")
+    return offenders
+
+
 class TestGuardsDoNotPipeIntoGrepQ:
     """A quiet grep exits on its first match; the upstream then dies of
     SIGPIPE, and `set -o pipefail` reports the pipeline as FAILED. Any
@@ -2633,31 +2678,120 @@ class TestGuardsDoNotPipeIntoGrepQ:
         literal `grep -q`, so `grep -Fqx` and `grep --quiet` walked past
         it.
         """
-        offenders = []
-        for number, _function, statement in _script_statements():
-            match = _QUIET_GREP.search(statement)
-            if match and "|" in statement[: match.start()]:
-                offenders.append(f"{number}: {statement}")
+        offenders = _quiet_grep_offenders(DAILY_SYNC)
         assert not offenders, (
             "these pipe into a quiet grep, whose match reads as a failure "
             "under `set -o pipefail`:\n" + "\n".join(offenders)
         )
 
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "printf '%s' \"$1\" | grep -q bulk",
+            "printf '%s' \"$1\" | grep -Fqx bulk",
+            "printf '%s' \"$1\" | grep --quiet bulk",
+            "printf '%s' \"$1\" | grep --silent bulk",
+            "printf '%s' \"$1\" | grep -E -q bulk",
+            "printf '%s' \"$1\" | egrep -q bulk",
+            "printf '%s' \"$1\" | fgrep -q bulk",
+            "printf '%s' \"$1\" | zgrep -q bulk",
+        ],
+    )
+    def test_every_spelling_of_a_quiet_grep_is_caught(
+        self, tmp_path: Path, spelling: str
+    ) -> None:
+        """Kills DS-L1: a pattern that matched only `grep -[A-Za-z]*q`
+        and `--quiet` directly after the command.
+
+        `grep -E -q` puts the flag after another flag; `--silent` is a
+        synonym; and egrep, fgrep and zgrep are the same program by other
+        names. Each of them re-opens the push gate the rule protects.
+        """
+        planted = tmp_path / f"planted-{abs(hash(spelling)) % 10**8}.sh"
+        planted.write_text(
+            DAILY_SYNC.read_text(encoding="utf-8").replace(
+                "has_bulk_rewrite_trailer() {",
+                "has_bulk_rewrite_trailer() {\n    " + spelling,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        assert _quiet_grep_offenders(planted), (
+            f"`{spelling}` walked past the lint"
+        )
+
+    def test_a_heredoc_body_is_not_linted_as_shell(self, tmp_path: Path) -> None:
+        """Kills DS-M2: anchoring the heredoc opener at end of line.
+
+        This script's one heredoc is `<<'PYEOF' >>"$LOG_FILE" 2>&1 || …`,
+        so an end-anchored pattern detected NO opener and the embedded
+        Python was linted as shell all along -- passing only because it
+        contains no grep. Planted here, so the skip is exercised rather
+        than assumed.
+        """
+        planted = tmp_path / "with-a-grep-in-the-heredoc.sh"
+        planted.write_text(
+            DAILY_SYNC.read_text(encoding="utf-8").replace(
+                "import json, sys\n",
+                'import json, sys\nprobe = "cat x | grep -q y"\n',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        offenders = _quiet_grep_offenders(planted)
+        assert not offenders, (
+            "a `| grep -q` inside the embedded Python tripped the lint, so "
+            "heredoc bodies are being read as shell: " + "\n".join(offenders)
+        )
+
+    def test_a_heredoc_word_in_a_comment_does_not_blind_the_scan(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L2: honouring an opener found in a comment.
+
+        A `<<NOTES` in prose after the last real site would swallow the
+        rest of the file -- every later statement invisible, the lint
+        green and blind. Planted before a genuine offence, which must
+        still be found.
+        """
+        source = DAILY_SYNC.read_text(encoding="utf-8")
+        marker = "has_bulk_rewrite_trailer() {"
+        assert marker in source, "the anchor this fixture plants against has moved"
+        planted = tmp_path / "with-a-comment-heredoc.sh"
+        planted.write_text(
+            source.replace(
+                marker,
+                "# a note about formats, see <<NOTES below\n"
+                + marker
+                + "\n    printf '%s' \"$1\" | grep -q bulk",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        offenders = _quiet_grep_offenders(planted)
+        assert offenders, (
+            "a `<<NOTES` in a comment hid every statement after it, so the "
+            "planted offence went unseen"
+        )
+
     def test_the_quiet_greps_are_exactly_where_they_are_expected(self) -> None:
         """Audit 3: the SET, not a count.
 
-        A count is satisfied by a decorative fifth site and broken by a
-        correct refactor. Naming the functions says what is actually
-        being protected, and a new one has to be added here deliberately.
+        A whole-file count is satisfied by a decorative extra site. A
+        per-function set is satisfied by DELETING one of the two greps
+        inside previously_recorded_stashes, which is the path matching
+        that keeps a stale sidecar row from being blamed for a fresh
+        conflict. The count per function says both things at once, and a
+        new site has to be added here deliberately.
         """
-        found = {
-            function
-            for _number, function, statement in _script_statements()
-            if _QUIET_GREP.search(statement)
-        }
+        found: dict[str, int] = {}
+        for _number, function, statement in _script_statements():
+            if _QUIET_GREP.search(statement):
+                found[function] = found.get(function, 0) + 1
         assert found == _QUIET_GREP_SITES, (
-            f"the quiet greps have moved: found {sorted(found)}, "
-            f"expected {sorted(_QUIET_GREP_SITES)}"
+            f"the quiet greps have moved or changed in number: found "
+            f"{sorted(found.items())}, expected "
+            f"{sorted(_QUIET_GREP_SITES.items())}"
         )
 
 
@@ -3308,11 +3442,12 @@ class TestRenderSyncGateSupersession:
         descriptions of one entry stand side by side again.
         """
         rendered = self._render(tmp_path, self._STALE_OTHER, [self._BINARY])
-        assert self._BINARY in rendered, rendered
-        assert self._STALE_OTHER not in rendered, (
-            "a stale free-text line about the same stash outlived this "
-            "run's word on it: " + str(rendered)
-        )
+        # audit L5 (seventh re-audit): the EXACT list, not membership.
+        # Membership let `tail -n +2` become `cat` (which leaks the count
+        # line into the details, inflating the next run's header) and
+        # `grep -qxF` become `-qF` (which retires a line on a substring)
+        # both pass.
+        assert rendered == [self._BINARY], rendered
 
     def test_a_listing_line_never_erases_a_specific_claim(
         self, tmp_path: Path
@@ -3322,11 +3457,10 @@ class TestRenderSyncGateSupersession:
         that listing must not retire what an earlier run knew about one
         of them."""
         rendered = self._render(tmp_path, self._BLOCKED, [self._LISTING])
-        assert self._BLOCKED in rendered, (
-            "a line that could attribute nothing erased a specific claim: "
-            + str(rendered)
+        assert rendered == [self._BLOCKED, self._LISTING], (
+            "a line that could attribute nothing erased a specific claim, "
+            "or the order the reader depends on changed: " + str(rendered)
         )
-        assert self._LISTING in rendered, rendered
 
     def test_a_completed_run_replaces_rather_than_appends(
         self, tmp_path: Path
@@ -3351,3 +3485,228 @@ class TestRenderSyncGateSupersession:
         assert result.returncode == 0, result.stdout + result.stderr
         lines = gate.read_text(encoding="utf-8").splitlines()
         assert lines == ["1", self._BINARY], lines
+
+
+class TestSpanRuleNeedsBothEnds:
+    """The span rule asks two things of a trailered commit: that it
+    started no lower than origin, and that it ended no higher than HEAD.
+    Only the first was ever tested."""
+
+    def _repo(self, tmp_path: Path, name: str, records: int) -> Path:
+        """A repo whose published corpus holds ``records`` lines."""
+        repo = tmp_path / name
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "memories").mkdir()
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "r{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "the published corpus", cwd=repo)
+        _git("update-ref", "refs/remotes/origin/main",
+             _git("rev-parse", "HEAD", cwd=repo).stdout.strip(), cwd=repo)
+        return repo
+
+    def _archive(self, repo: Path, records: int) -> None:
+        """A trailered bulk rewrite down to ``records`` lines."""
+        (repo / "memories").mkdir(exist_ok=True)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "kept{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): monthly archive\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _delete_corpus(self, repo: Path) -> None:
+        """A trailered commit that removes the corpus altogether, so
+        everything after it has a parent that holds none."""
+        _git("rm", "--quiet", "--", "memories/memories.jsonl", cwd=repo)
+        _git("commit", "--quiet", "-m",
+             "chore(memories): retire the corpus\n\nRewrite-Class: bulk\n", cwd=repo)
+
+    def _merge_onto_head(self, repo: Path, records: int) -> str:
+        """A merge of HEAD with a parentless stranger, holding ``records``
+        corpus lines of its own.
+
+        Unmeasurable only because NEITHER parent holds a corpus -- which
+        is why the caller deletes it first. The merge stays on HEAD's
+        history, so the commits before it are in the range the guard
+        scans; a merge built off to one side would take them out of it,
+        and the mutant this fixture exists for would survive.
+        """
+        head = _git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        empty = _git("hash-object", "-wt", "tree", "/dev/null", cwd=repo).stdout.strip()
+        stranger = _git("commit-tree", empty, "-m", "a stranger",
+                        cwd=repo).stdout.strip()
+        (repo / "memories").mkdir(exist_ok=True)
+        (repo / "memories" / "memories.jsonl").write_text(
+            "".join(f'{{"id": "m{n}"}}\n' for n in range(records)), encoding="utf-8"
+        )
+        _git("add", "-A", cwd=repo)
+        tree = _git("write-tree", cwd=repo).stdout.strip()
+        merge = _git("commit-tree", tree, "-p", head, "-p", stranger, "-m",
+                     "Merge a stranger", cwd=repo).stdout.strip()
+        _git("reset", "--quiet", "--hard", merge, cwd=repo)
+        return merge
+
+    def _guard(self, repo: Path, logs: Path) -> subprocess.CompletedProcess[str]:
+        """Call the published-shrink guard inside ``repo``."""
+        return _run_shell(
+            "\n".join(
+                [
+                    'DETECT_JSONL_SHRINK="true"',
+                    f'LOG_DIR="{logs}"',
+                    f'DATA_DIR="{repo}"',
+                    f'cd "{repo}"',
+                    'abort_on_published_shrink "ahead-of-origin push"',
+                    "echo REACHED-THE-PUSH",
+                ]
+            ),
+            (
+                "abort_on_published_shrink",
+                "corpus_lines_at",
+                "corpus_line_count",
+                "has_bulk_rewrite_trailer",
+            ),
+        )
+
+    def test_a_trailer_that_started_high_but_ended_high_excuses_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills the SECOND condition: mutating `lines_after` to
+        `lines_before` on the `-le` test.
+
+        origin holds 5. A trailered rewrite takes 5 to 4 -- it started
+        exactly where origin is, so the first condition passes -- and an
+        unmeasurable merge then holds 2. The trailer said nothing about
+        the drop from 4 to 2, and with only the first condition checked
+        the run published it.
+        """
+        repo = self._repo(tmp_path, "started-high", 5)
+        logs = tmp_path / "logs-started-high"
+        logs.mkdir()
+        self._archive(repo, 4)
+        # Retiring the corpus is what leaves the merge below with no
+        # parent holding one, while keeping the whole chain on HEAD.
+        self._delete_corpus(repo)
+        merge = self._merge_onto_head(repo, 2)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 4, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" not in result.stdout, result.stdout
+        written = next(iter(logs.glob("daily-sync-shrink-*.log"))).read_text(
+            encoding="utf-8"
+        )
+        assert "none of its parents holds the corpus" in written, written
+        assert merge in written, written
+
+    def test_a_trailer_that_spans_both_ends_still_publishes(
+        self, tmp_path: Path
+    ) -> None:
+        """The rule must still let a real archive run out: this one starts
+        at origin's count and ends at HEAD's, so nothing is left over for
+        the merge to have taken."""
+        repo = self._repo(tmp_path, "spans-both", 5)
+        logs = tmp_path / "logs-spans-both"
+        logs.mkdir()
+        self._delete_corpus(repo)
+        self._merge_onto_head(repo, 5)
+        self._archive(repo, 1)
+
+        result = self._guard(repo, logs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "REACHED-THE-PUSH" in result.stdout, result.stdout
+
+
+class TestRenameRecordsAreEncodedToo:
+    """A rename carries a SECOND path, and it goes through the same
+    encoding -- or a newline in the original path splits that record and
+    the fragment answers for a real file."""
+
+    _FUNCTIONS = ("status_records", "status_lines_for", "encode_record_path")
+
+    def test_a_rename_from_a_newline_path_stays_one_record(
+        self, tmp_path: Path
+    ) -> None:
+        """Kills DS-L4: emitting the rename's original path raw.
+
+        Only the destination went through the encoder in the first fix.
+        The source is written by a different `printf`, and a newline in
+        it splits the record exactly as it did before.
+        """
+        repo = tmp_path / "rename-newline"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        source = "notes/two\nlines.md"
+        (repo / source).write_text("content that stays\n", encoding="utf-8")
+        # A real file whose name is the tail of the source path.
+        (repo / "lines.md").write_text("untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", source, "notes/renamed.md", cwd=repo)
+
+        result = _run_shell(f'status_records "{repo}"\n', self._FUNCTIONS)
+        assert result.returncode == 0, result.stderr
+        rows = result.stdout.splitlines()
+        assert len(rows) == 2, ("a rename from a path with a newline split "
+                               f"into more than its two records: {rows}")
+        assert "notes/two\\nlines.md" in result.stdout, result.stdout
+
+    def test_the_fragment_of_a_rename_source_answers_for_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence, and the one that matters: the tail of a split
+        source must not be matched as though it were a path of its own."""
+        repo = tmp_path / "rename-impersonate"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        (repo / "notes" / "decoy\nlines.md").write_text("stays\n", encoding="utf-8")
+        (repo / "lines.md").write_text("a real file, untouched\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        _git("mv", "notes/decoy\nlines.md", "notes/renamed.md", cwd=repo)
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "lines.md"\n',
+            self._FUNCTIONS,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "", (
+            "the tail of a split rename source answered for a file nothing "
+            "touched: " + repr(result.stdout)
+        )
+
+    def test_the_query_path_is_encoded_before_it_is_compared(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the other half: the query goes through the same encoder.
+
+        Leaving it raw fails SAFE -- a real path with a newline stops
+        matching its own record -- but silently, and a guard that has
+        quietly stopped seeing a path is how an entry gets called
+        unmeasurable for ever.
+        """
+        repo = tmp_path / "query-encoded"
+        repo.mkdir()
+        _git("init", "--quiet", "--initial-branch=main", cwd=repo)
+        (repo / "notes").mkdir()
+        awkward = "notes/two\nlines.md"
+        (repo / awkward).write_text("seed\n", encoding="utf-8")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "--quiet", "-m", "seed", cwd=repo)
+        (repo / awkward).write_text("edited\n", encoding="utf-8")
+
+        result = _run_shell(
+            f'records="$(status_records "{repo}")"\n'
+            'status_lines_for "$records" "$PA_TEST_PATH"\n',
+            self._FUNCTIONS,
+            {"PA_TEST_PATH": awkward},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == " M\tnotes/two\\nlines.md\n", (
+            "a path with a newline no longer matches its own record: "
+            + repr(result.stdout)
+        )
