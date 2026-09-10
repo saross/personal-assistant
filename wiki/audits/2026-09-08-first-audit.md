@@ -1637,7 +1637,10 @@ URL. Other clones may still hold the branch (zbook to check).
    process the window in chunks of 30, which multiplies Haiku calls on the 5% of
    firings that need it (never more than ten calls for the largest window seen).
    Approve the spend, or choose a larger single window.
-2. **S2 — what the daily sync may auto-commit.** Today it commits everything
+2. **S2 — what the daily sync may auto-commit. DECIDED 2026-09-10: option
+   (a), an allow-list of append-only paths, starting with `memories/`,
+   `scratchpads/`, the notes inbox, and `logs/`; a review of the list is an
+   inbox row; implementation needs its own PR and re-audit.** Today it commits everything
    dirty in the data submodule after the stash pop, prose included. The hub's
    own comments say prose must never be swept, but scratchpad and notes appends
    are left for it deliberately. Options: (a) an explicit allow-list of
