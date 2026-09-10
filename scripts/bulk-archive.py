@@ -1027,6 +1027,11 @@ def _load_checkpoint(logger: logging.Logger | None = None) -> dict[str, Any]:
 #: times. A poisoned session should keep asking (audit round 4c-3, L-9).
 FAILED_RETRY_AFTER_DAYS = 7
 
+#: How many session ids the sizeless-manifest summary names before falling
+#: back to a count. One constant for both halves of that message, so the
+#: list and the "and N more" remainder cannot drift apart.
+SIZELESS_IDS_SHOWN = 3
+
 #: Substrings of a recorded failure reason that mean "try again next run".
 #: These describe the state of the SOURCE at one moment, not a defect in the
 #: session, so the next run is entitled to a different answer.
@@ -1493,6 +1498,7 @@ def refuse_incomplete_source(
     session_path: Path,
     expected_size: int | None,
     logger: logging.Logger,
+    sizeless_sessions: list[str],
 ) -> str | None:
     """Return a reason to refuse archiving *session_path*, or ``None``.
 
@@ -1509,6 +1515,12 @@ def refuse_incomplete_source(
     * it was last written inside the grace window, so a live session or an
       in-flight compaction may still be appending;
     * it is SHORTER than discovery recorded.
+
+    *sizeless_sessions* is required, not optional. It defaulted to ``None``
+    and was then replaced with a throwaway list, so a caller that omitted it
+    silenced the missing-size condition entirely — the guard degraded and
+    nothing anywhere said so (audit round 4c-6, finding L-c). Making it
+    mandatory means a new call site cannot lose the report by accident.
 
     The two directions of a size difference are not the same event, and
     round 4c-2 wrongly treated them alike (audit round 4c-3, finding M-2).
@@ -1553,14 +1565,14 @@ def refuse_incomplete_source(
         # A manifest entry written before discovery recorded sizes. Both the
         # shrink refusal and the growth warning below are then unreachable,
         # so the completeness guard silently degrades to the grace check
-        # alone — and says so only at debug level, where nobody sees it
-        # (audit round 4c-4, finding 3). Re-running discover repairs it.
-        logger.warning(
-            "%s: manifest entry records no size (it predates size "
-            "recording), so the shrink and growth checks cannot run for "
-            "this session — re-run discover to restore them",
-            session_path.name,
-        )
+        # alone (audit round 4c-4, finding 3). Re-running discover repairs
+        # it — for the WHOLE manifest at once, which is why this is reported
+        # once per run rather than once per session: a legacy manifest has
+        # every entry sizeless, so per-session warnings would bury the run's
+        # real output under hundreds of identical lines and still tell the
+        # operator exactly one thing (round 4c-5, finding L4). The caller
+        # collects the ids and summarises.
+        sizeless_sessions.append(session_path.name)
     if expected_size is not None and stat.st_size < expected_size:
         return (
             f"source has SHRUNK since discovery ({expected_size} -> "
@@ -1684,15 +1696,45 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.dry_run:
         logger.info("[DRY RUN] Would archive %d sessions:", len(to_archive))
         for entry in to_archive[:10]:
+            # ``size_bytes`` and ``turns`` are both absent from a manifest
+            # that predates size recording. Reading either unguarded made
+            # `archive --dry-run` die with a KeyError over exactly the
+            # manifest whose missing fields need explaining — the preview
+            # crashed before the explanation could be printed (audit round
+            # 4c-6, finding L-e).
+            size_bytes = entry.get("size_bytes")
+            size_note = (
+                f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes is not None
+                else "size not recorded"
+            )
             logger.info(
-                "  %s (%s, %d turns, %.1f MB)",
+                "  %s (%s, %s turns, %s)",
                 entry["session_id"][:8],
                 entry["project_name"],
-                entry["turns"],
-                entry["size_bytes"] / 1024 / 1024,
+                entry.get("turns", "?"),
+                size_note,
             )
         if len(to_archive) > 10:
             logger.info("  ... and %d more", len(to_archive) - 10)
+
+        # The dry run returns here, BEFORE the completeness guard and the
+        # sizeless summary it feeds, so the remedy that summary carries
+        # would never reach a preview. Counted over the whole manifest, not
+        # just the ten listed, and reported here instead (audit round 4c-7,
+        # low: the previous comment claimed a remedy the dry run could not
+        # print).
+        n_sizeless = sum(
+            1 for entry in to_archive if entry.get("size_bytes") is None
+        )
+        if n_sizeless:
+            logger.warning(
+                "[DRY RUN] %d of %d manifest entr%s record no size, so the "
+                "shrink and growth checks cannot run for them (the manifest "
+                "predates size recording) — re-run discover to restore "
+                "those checks",
+                n_sizeless, len(to_archive),
+                "y" if n_sizeless == 1 else "ies",
+            )
         return
 
     # Archive each session
@@ -1701,6 +1743,9 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
     archived_dirs: list[Path] = []
     # (session_id, reason) for sources the completeness guard refused.
     skipped_incomplete: list[tuple[str, str]] = []
+    # Sessions whose manifest entry carried no recorded size, summarised
+    # once at the end of the run rather than warned about individually.
+    sizeless_sessions: list[str] = []
 
     for i, entry in enumerate(to_archive, 1):
         session_path = Path(entry["session_path"])
@@ -1726,7 +1771,8 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         # window between the two commands is exactly where a growing
         # transcript slips through (AR3).
         refusal = refuse_incomplete_source(
-            session_path, entry.get("size_bytes"), logger
+            session_path, entry.get("size_bytes"), logger,
+            sizeless_sessions,
         )
         if refusal:
             logger.warning(
@@ -1829,6 +1875,22 @@ def cmd_archive(args: argparse.Namespace, logger: logging.Logger) -> None:
         "\nArchive complete: %d sessions, %d subagents archived",
         archived_count, subagent_count,
     )
+    if sizeless_sessions:
+        # One constant, used for both the slice and the remainder, so the
+        # two can never disagree: `[:3]` widened to `[:4]` while the
+        # remainder still said "and 2 more" was invisible to the test
+        # (audit round 4c-6, finding L-b).
+        shown_ids = sizeless_sessions[:SIZELESS_IDS_SHOWN]
+        remainder = len(sizeless_sessions) - len(shown_ids)
+        logger.warning(
+            "%d manifest entr%s recorded no size, so the shrink and growth "
+            "checks could not run for them (the manifest predates size "
+            "recording): %s%s — re-run discover to restore those checks",
+            len(sizeless_sessions),
+            "y" if len(sizeless_sessions) == 1 else "ies",
+            ", ".join(shown_ids),
+            "" if remainder <= 0 else f" and {remainder} more",
+        )
     if skipped_incomplete:
         logger.warning(
             "%d session(s) skipped by the completeness guard (not archived):",

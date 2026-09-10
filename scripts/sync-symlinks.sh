@@ -250,11 +250,45 @@ non-empty directory), then re-run this script."
 say_data_remedy() {
     # Print the remedy that fits the submodule's ACTUAL state. The
     # destructive one is reachable only when git says the submodule has no
-    # checkout at all, so nothing of the operator's can be inside it.
-    if [ -z "$submodule_state" ]; then
+    # checkout at all, so nothing of the operator's can be inside it —
+    # and only when git SUCCEEDED in saying so (round 4d-6, L9).
+    #
+    # Recorded, not fixed (L9, second half): this script asks GIT what
+    # state data/ is in, while compose-global-claude-md.sh asks the
+    # FILESYSTEM (does data/.git exist). The two agree in every state
+    # either script can reach on a healthy machine, but an inconsistent
+    # one — a .git left behind after a de-initialisation, say — would draw
+    # opposite advice from them. Reconciling them means giving the
+    # composer a git dependency it does not otherwise have, which is a
+    # worse trade than the divergence, and the composer's answer is the
+    # conservative one: it says "do not delete" whenever data/.git exists.
+    # Round 4d-7 (L-i): the failed-query test comes FIRST. It used to sit
+    # third, behind `-z "$submodule_state"`, so a git that exited 128
+    # printing nothing was reported as "no data submodule is declared" —
+    # a confident answer drawn from a question that was never answered.
+    if [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
+        say "  Remedy: git could not report on the data submodule, so its"
+        say "    state is unknown. Run 'git -C $PA_DIR submodule status'"
+        say "    and resolve what it reports before re-running. Do NOT"
+        say "    delete $PA_DIR/data on the strength of a failed query."
+    elif [ -z "$submodule_state" ]; then
         say "  Remedy: no data submodule is declared in this checkout, so"
         say "    $COMPOSER_LOCAL cannot appear. Check .gitmodules."
-    elif [ "${submodule_state#-}" != "$submodule_state" ]; then
+    elif [ "${submodule_state#-}" != "$submodule_state" ] &&
+         [ "$SUBMODULE_STATUS_OK" -eq 1 ] &&
+         [ "$WOULD_INIT" -eq 0 ]; then
+        # Two conjuncts guard the one branch that tells someone to delete
+        # their data. The first is redundant given the failed-query test
+        # above, and kept so a later reordering cannot quietly unlock it.
+        #
+        # The second is round 4d-8 (M-2): $submodule_state is captured
+        # ONCE, before step 1 runs, and never re-read. After a successful
+        # init it is stale — it still says "-" — so a submodule git had
+        # just cloned into would be met with "remove $PA_DIR/data
+        # entirely", about a directory that now holds a fresh checkout.
+        # That is reachable whenever the recorded pa-data commit does not
+        # carry global-claude-md/local.md. $WOULD_INIT is the fact the
+        # stale string cannot express.
         say "  Remedy: $DATA_REMEDY"
     else
         say "  Remedy: data/ IS initialised, so this is a missing file"
@@ -267,6 +301,18 @@ say_data_remedy() {
 #: The composer's only data/-borne source; step 7 fails without it.
 COMPOSER_LOCAL="$PA_DIR/data/global-claude-md/local.md"
 SKIP_COMPOSE=0
+#: What `git submodule status -- data` reported, and whether it succeeded.
+#: Declared here rather than at the call site (round 4d-6, L8):
+#: say_data_remedy() reads both, and under `set -u` a future call placed
+#: above the assignment would abort the script instead of printing advice.
+#: An empty state with status 0 reads as "no submodule declared", which is
+#: the safe default — it never selects the destructive remedy.
+submodule_state=""
+SUBMODULE_STATUS_OK=1
+#: Set when step 1 initialises (or, under --dry-run, would initialise) the
+#: submodule. The pre-check below needs it to tell "this checkout is
+#: broken" from "the init that fixes it was only narrated".
+WOULD_INIT=0
 # Audit round 4d (E10): run this ONLY when data/ is uninitialised. On an
 # already-initialised submodule `git submodule update` checks out the
 # gitlink SHA recorded in the superproject, which detaches data/ from its
@@ -310,14 +356,41 @@ SKIP_COMPOSE=0
 # worktree and ".git/modules/<name>" for a submodule. Matching on that is
 # exact, and needs no git binary, which matters because this step runs
 # before anything has verified git works.
+#
+# Round 4d-6 (L6), recorded rather than fixed: the pattern requires a
+# literal "/.git/" component, so a RELATIVE pointer ("gitdir:
+# .git/worktrees/x") and a bare-repo worktree pointer (whose admin
+# directory is not called ".git") would not match, and such a checkout
+# would be treated as an ordinary clone. All ten worktree pointers on
+# this machine are absolute and match. Widening the pattern would also
+# widen what counts as a worktree, and the cost of the false NEGATIVE
+# here is small — the submodule init is attempted and git declines —
+# whereas a false positive skips an init that was needed.
 IS_WORKTREE=0
 if [ -f "$PA_DIR/.git" ] &&
    grep -qE '^gitdir:.*/\.git/worktrees/' "$PA_DIR/.git" 2>/dev/null; then
     IS_WORKTREE=1
 fi
 
-submodule_state="$(git submodule status -- data 2>/dev/null || true)"
-if [ -z "$submodule_state" ]; then
+# Round 4d-6 (L9): keep git's EXIT STATUS as well as its output. `$( … ||
+# true )` retains whatever was printed before a failure, so a status that
+# emitted a "-" line and then failed would otherwise be treated as
+# authoritative — and "-" is the one answer that unlocks the destructive
+# remedy. The remedy requires both: git said "-", AND git succeeded.
+submodule_state="$(git submodule status -- data 2>/dev/null)" \
+    && SUBMODULE_STATUS_OK=1 || SUBMODULE_STATUS_OK=0
+# Round 4d-7 (M1): a FAILED query is not a report of an uninitialised
+# submodule. `$( … )` keeps whatever was printed before the failure, so a
+# git that emitted a "-" line and then exited non-zero used to land in the
+# "uninitialised but not empty" branch below and print "remove
+# $PA_DIR/data entirely" — the destructive advice, from a question that
+# was never answered. Every branch that follows now presumes the query
+# succeeded.
+if [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
+    say "  WARNING: 'git submodule status' failed, so the state of data/"
+    say "    is unknown and this step will do nothing."
+    say_data_remedy
+elif [ -z "$submodule_state" ]; then
     say_verbose "  No data submodule declared — nothing to initialise."
 elif [ "${submodule_state#-}" = "$submodule_state" ]; then
     say_verbose "  Submodule already initialised — leaving it alone."
@@ -339,9 +412,20 @@ elif [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
     # directory, by hand or otherwise (verified against git 2.48.1 on a
     # throwaway superproject). Emptying data/ is the only thing that
     # helps, so it is the only thing offered.
+    # Round 4d-7 (M1): the advice is PRINTED FROM ONE PLACE. This branch
+    # used to interpolate $DATA_REMEDY inline, so the guard added in round
+    # 4d-6 protected the step-7 site and not this one, and the two could
+    # (and did) disagree within a single run.
     say "  WARNING: data/ is uninitialised but not empty, so git cannot"
-    say "    clone into it. $DATA_REMEDY"
+    say "    clone into it."
+    say_data_remedy
 else
+    # Round 4d-7 (M2): record that this run initialises the submodule.
+    # Under --dry-run the init is narrated rather than performed, so
+    # data/ stays empty and the pre-check below would otherwise conclude
+    # the checkout is broken — and tell the operator to delete the very
+    # directory the preview had just said it would populate.
+    WOULD_INIT=1
     run_action git submodule update --init --recursive --quiet
     did_verbose "have the submodule ready" "Submodule ready."
 fi
@@ -367,14 +451,31 @@ if [ ! -f "$COMPOSER_LOCAL" ]; then
         say "    checkout), so step 7 will be SKIPPED and"
         say "    $CLAUDE_DIR/CLAUDE.md left as it is."
         SKIP_COMPOSE=1
+    elif [ $DRY_RUN -eq 1 ] && [ $WOULD_INIT -eq 1 ]; then
+        # Round 4d-7 (M2): a FRESH CLONE preview. Step 1 has just
+        # narrated the init that produces this file, and a real run in
+        # this state exits 0 and composes normally. Saying "a REAL run
+        # would refuse" here is false, and offering to delete data/ is
+        # worse than false. Step 7 is skipped only because the init was
+        # narrated rather than performed.
+        say "  NOTE: $COMPOSER_LOCAL is absent only because the step-1"
+        say "    init was previewed rather than performed. A real run"
+        say "    initialises data/ and composes normally; this preview"
+        say "    skips step 7."
+        SKIP_COMPOSE=1
     elif [ $DRY_RUN -eq 1 ]; then
         # L-c, decided in round 4d-5: a preview changes nothing, so it
         # must not fail, and it must run to the end — a preview that
         # stops two thirds of the way through is not a preview. It says
         # plainly that the real run would refuse, then narrates the rest.
+        #
+        # Round 4d-6 (L5): and it prints the SAME remedy the real run
+        # would. A preview whose whole job is to show what would happen
+        # was withholding the one line the operator needs to act on.
         say "  NOTE: $COMPOSER_LOCAL is missing, so a REAL run would"
         say "    refuse at step 1. This preview continues, and step 7"
         say "    will be skipped."
+        say_data_remedy
         SKIP_COMPOSE=1
     else
         say "ERROR: $COMPOSER_LOCAL is missing, so step 7 cannot succeed."

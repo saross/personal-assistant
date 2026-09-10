@@ -746,20 +746,20 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-three PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-six PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
-and glue); #138 (machine glue, two re-audits); #126, #131, #134
+and glue); #138, #149 (machine glue, two re-audits each); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140, #145, #152
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
-#136, #141
+#136, #141, #147
 (archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
 then one, then two);
-#142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
+#142, #146, #150, #154, #156 (bake-off rounds 4e-5 to 4e-9).
 
 Open, each with its verdict so far:
 
@@ -1036,7 +1036,25 @@ Open, each with its verdict so far:
   fragment from the script source, gate the destructive branch on
   `WOULD_INIT -eq 0`, pin step 1's remedy; then merge on a green suite
   with the one-line test fix verified by mutation rather than a third
-  re-audit.
+  re-audit. Round 4d-8 delivered (cee582c): the fragment parsed from the
+  `DATA_REMEDY=` literal, the destructive branch gated on `WOULD_INIT
+  -eq 0` (a just-initialised submodule lacking `local.md` is told to look
+  inside it, never to delete it), step 1's remedy pinned, printed twice
+  by design and pinned at two; the coordinator verified by mutation that
+  a reworded remedy plus a re-injected regression fails the fresh-clone
+  preview test. **Merged 2a80630** 2026-09-10. Process slip recorded: the
+  merge command gated on GitHub mergeability, not on the coordinator
+  suite line, and that pre-merge run (554 s under load) showed one
+  failure; a captured full run on main afterwards named it —
+  `tests/test_analyse_wiki_vocabulary.py::TestWritesNothing::
+  test_repository_tree_and_home_are_untouched`, a whole-checkout
+  snapshot that includes the live `data/` submodule, so the extraction
+  hook's five-minute appends (reported by the hermeticity summary in the
+  same run) fail it whenever they overlap the run; it passes alone and in
+  every clean copy. Not caused by #149. DEFERRED: exclude the canonical
+  store paths (or tolerate the hermeticity guard's verified live appends)
+  in that snapshot; and the coordinator's merge step now checks the
+  suite line first.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1273,8 +1291,13 @@ Open, each with its verdict so far:
   hollow (the `_rclone_writing` stub never records argv), taken in a
   closing round 4c-8 with two dead-comment/dead-assignment lows; deferred
   lows: no fixture exceeds ten manifest entries; the lint skips
-  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Merge on a green
-  suite after the one-line fix.
+  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Round 4c-8
+  delivered (fbb5a2d): the stub records argv per subcommand, the
+  ordering test asserts the copy ran, a positive control asserts copyto
+  runs after a successful copy; the coordinator verified independently
+  that moving the catalogue push above the copy now fails the named
+  test. Coordinator suite 4586 passed, exit 0. **Merged 0a49f15**
+  2026-09-10 — the live R2 fix is on main.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1372,8 +1395,20 @@ Open, each with its verdict so far:
   diagnostic reported once by parameter (a state-dict marker was
   rejected as a leak); `assemble_requests` validates first;
   `known_session_ids` removed; the help slice scoped within the options
-  section. Merged with main (a163fcb); coordinator suite, PR, and
-  re-audit pending.
+  section. Merged with main (a163fcb), coordinator suite 4550 passed,
+  19 deselected, exit 0; **PR #156, merged** 2026-09-10 (re-audit
+  verdict merge: every claimed behaviour reproduced; the remedy never
+  names a file the rebuild refuses; validation before `create` and before
+  the cost gate; the fsync target pinned by inode). DEFERRED: the
+  exception-type test passes for the wrong reason (`OSError(ENOENT, …)`
+  auto-maps to `FileNotFoundError`, so `raise OSError(` survives); the
+  RECORDED-manifest side of `if found:` is unpinned and silent (an empty
+  recorded manifest yields the placeholder with no stderr, unlike the
+  supplied side); `exc.filename` dropped by the two-argument re-raise;
+  an errno-less `OSError` loses its message; `setdefault` treats a
+  malformed recorded path as an existing record; the assemble error's
+  position wording unpinned; two tests assign `sys.modules` directly.
+  The bake-off branch is closed for this cycle.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`

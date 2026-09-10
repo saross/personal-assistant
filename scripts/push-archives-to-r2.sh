@@ -17,7 +17,14 @@
 #   to lose; if a session is removed from canonical we still keep the R2
 #   copy. (Use ``rclone sync`` instead only if exact mirroring with
 #   deletion is ever explicitly wanted.)
-# - Never MODIFIES an object already in R2 (audit 2026-09-08, AR17).
+# - ONE exception, by design: `CATALOG.json` at the archive root. It is a
+#   DERIVED index, rebuilt from disk by `bulk-archive.py verify
+#   --fix-catalogue`, so its content legitimately changes whenever a
+#   session is added. It is excluded from the immutable copy and pushed
+#   afterwards with `rclone copyto` and no --immutable, where a replace is
+#   the intent. Nothing else in the archive is mutable: a session
+#   transcript or its metadata changing IS the corruption signal.
+# - Never MODIFIES any other object already in R2 (audit 2026-09-08, AR17).
 #   ``--immutable`` is rclone's documented flag for exactly this: an
 #   existing destination file whose size or modtime differs from the
 #   source raises an error and aborts that transfer instead of
@@ -176,12 +183,19 @@ fi
 # mode (same guard as daily-sync.sh's cc-archives step). Pushing from an
 # empty mount would be a no-op here (copy never deletes) but the check
 # keeps the log honest about why nothing moved.
-if ! df "$CANON" 2>/dev/null | tail -1 | grep -q "rpi-server"; then
+# Captured first, then matched with a here-string: `… | grep -q` makes a
+# MATCH read as a failure under `pipefail` once the producer has more to
+# write than a pipe buffer holds (audit round 4c-7, finding C-1, and the
+# repository lint in tests/test_pipefail_grep_lint.py). `df` on one path is
+# small enough that it never bit here, but the shape is the defect.
+canon_mount="$(df "$CANON" 2>/dev/null | tail -1 || true)"
+if ! grep -q "rpi-server" <<< "$canon_mount"; then
     log "r2-push: rpi-shares not mounted (silent-empty-dir state) — skipped"
     exit 1
 fi
 
-if ! "$RCLONE_BIN" listremotes 2>/dev/null | grep -q '^r2archives:'; then
+configured_remotes="$("$RCLONE_BIN" listremotes 2>/dev/null || true)"
+if ! grep -q '^r2archives:' <<< "$configured_remotes"; then
     log "r2-push: rclone remote [r2archives] not configured — skipped"
     exit 1
 fi
@@ -204,18 +218,18 @@ if [[ ${#missing_creds[@]} -gt 0 ]]; then
 fi
 
 # --- Push ----------------------------------------------------------------
-RCLONE_FLAGS=(
-    # Never upload a staged temporary. normalise-archive-storage.py and
-    # bulk-archive.py both write via `<name>.tmp` and rename; a process
-    # killed in between leaves the partial file behind. Uploading one is
-    # worse than it sounds: the push is --immutable and never deletes, so a
-    # half-written temporary becomes a PERMANENT object in R2 that cannot
-    # be replaced or removed (audit round 4c-3, finding L-10).
-    --exclude "*.tmp"
-    # Refuse to modify an object already in R2 — see the header. An
-    # existing file whose size or modtime differs from the source is a
-    # corruption signal in an append-only archive, not an update.
-    --immutable
+# Flags every invocation shares. Kept separate from the immutable-copy
+# flags below because the catalogue push deliberately does NOT take
+# --immutable; see CATALOGUE_FILE_NAME.
+RCLONE_BASE_FLAGS=(
+    # Pin the log format. The classifier below reads the level marker out of
+    # rclone's own lines, and `--log-format` is settable from the ambient
+    # environment (RCLONE_LOG_FORMAT) as well as by `--use-json-log`. Either
+    # would reshape every line and turn every refusal into exit 2, silently
+    # — the same failure C1 caused by assuming a shape rclone never emits.
+    # `date,time` is rclone's own default, so this pins today's behaviour
+    # rather than changing it (audit round 4c-7, finding M-2).
+    --log-format date,time
     --s3-no-check-bucket
     --s3-disable-checksum
     --fast-list
@@ -227,6 +241,78 @@ RCLONE_FLAGS=(
     --log-level INFO
 )
 
+#: The ONE file in the archive root that is mutable by design. CATALOG.json
+#: is a DERIVED index, rebuilt from disk by `bulk-archive.py verify
+#: --fix-catalogue`, so its content legitimately changes whenever a session
+#: is added — it is a rebuild, not a rewrite of history.
+#:
+#: --immutable therefore refuses it, correctly by its own rule and wrongly
+#: for this file: since 2026-09-09 10:28 every daily push exited 3
+#: ("investigate before re-running") over a file whose change is expected,
+#: and before the flag the log shows it as "Copied (replaced existing)" on
+#: every run. So it is excluded from the immutable copy and pushed
+#: separately afterwards, without --immutable, where a replace is the
+#: intent (audit round 4c-7, live-consequence addendum).
+#:
+#: Nothing else in the archive is mutable. A session transcript or its
+#: metadata changing IS the corruption signal --immutable exists to raise.
+CATALOGUE_FILE_NAME="CATALOG.json"
+
+# The immutable bulk copy: everything except the staged temporaries and the
+# derived catalogue.
+RCLONE_COPY_FLAGS=(
+    "${RCLONE_BASE_FLAGS[@]}"
+    # Never upload a staged temporary. normalise-archive-storage.py and
+    # bulk-archive.py both write via `<name>.tmp` and rename; a process
+    # killed in between leaves the partial file behind. Uploading one is
+    # worse than it sounds: this copy is --immutable and never deletes, so
+    # a half-written temporary becomes a PERMANENT object in R2 that cannot
+    # be replaced or removed (audit round 4c-3, finding L-10).
+    --exclude "*.tmp"
+    # The derived index, handled separately below. The leading slash
+    # anchors the pattern at the root of the transfer, so a session
+    # directory that happens to contain a CATALOG.json is still covered by
+    # the immutable rule.
+    --exclude "/$CATALOGUE_FILE_NAME"
+    # Refuse to modify an object already in R2 — see the header. An
+    # existing file whose size or modtime differs from the source is a
+    # corruption signal in an append-only archive, not an update.
+    --immutable
+)
+
+# Push the derived catalogue, which is allowed to change. Runs only AFTER a
+# successful immutable copy, so the index can never describe objects that
+# failed to upload. A failure here is always transport — there is no
+# --immutable and so no corruption signal to read — and is reported exit 2.
+push_catalogue() {
+    local dry_run="$1" source="$CANON/$CATALOGUE_FILE_NAME" rc=0
+    if [[ ! -f "$source" ]]; then
+        log "r2-push: no $CATALOGUE_FILE_NAME at $source — nothing to" \
+            "publish (the archive has not been catalogued yet)"
+        return 0
+    fi
+    if [[ "$dry_run" == "dry-run" ]]; then
+        log "r2-push: DRY-RUN copyto $CATALOGUE_FILE_NAME (mutable," \
+            "no --immutable)"
+        "$RCLONE_BIN" copyto "${RCLONE_BASE_FLAGS[@]}" --dry-run \
+            "$source" "$DEST/$CATALOGUE_FILE_NAME" || rc=$?
+    else
+        log "r2-push: copyto $CATALOGUE_FILE_NAME (mutable, no --immutable)"
+        "$RCLONE_BIN" copyto "${RCLONE_BASE_FLAGS[@]}" \
+            "$source" "$DEST/$CATALOGUE_FILE_NAME" || rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+        # Never exit 3 here: this step carries no --immutable, so a failure
+        # cannot be a corruption signal. The archive itself is already
+        # safely uploaded; only the index is stale.
+        log "r2-push: catalogue push failed (rc=$rc; see $LOG_FILE) —" \
+            "the archive copy SUCCEEDED, only the derived index is stale;" \
+            "transport failure, safe to retry"
+        exit 2
+    fi
+    return 0
+}
+
 # Classify a failed transfer and exit. Shared by the dry-run and real
 # branches, so a dry run cannot report a failure differently from the run it
 # is previewing (audit round 4c-4, finding 6).
@@ -237,14 +323,12 @@ RCLONE_FLAGS=(
 # transport failure exit 3 for ever (round 4c-3, finding M-1). Only the
 # bytes this run appended are examined.
 classify_failure_and_exit() {
-    local rc="$1" bytes_before="$2" label="$3" this_run_output
-    # rclone's OWN output only. This script's log lines are in the same file
-    # and embed the canonical and destination paths, so a store whose path
-    # happens to contain "immutable" would make every transport failure
-    # report a corruption abort. Our lines all carry the `r2-push:` prefix
-    # the log helper writes, so they are dropped before the match.
+    local rc="$1" bytes_before="$2" label="$3" this_run_output refusal_re
+    # Only the bytes THIS run appended. $LOG_FILE is append-only and shared
+    # with every previous run, so a refusal recorded weeks ago would
+    # otherwise re-classify today's transport failure for ever.
     this_run_output="$(tail -c "+$((bytes_before + 1))" "$LOG_FILE" \
-        2>/dev/null | grep -v '^\[[0-9-]* [0-9:]*\] r2-push: ' || true)"
+        2>/dev/null || true)"
 
     # Two very different failures share rclone's non-zero exit, and they want
     # opposite responses (round 4c-2, finding 12). A network or auth failure
@@ -252,7 +336,80 @@ classify_failure_and_exit() {
     # archive. An --immutable refusal means a canonical object CHANGED,
     # which in an append-only archive is a corruption signal that a retry
     # cannot fix and that a human has to look at.
-    if printf '%s' "$this_run_output" | grep -qi "immutable"; then
+    #
+    # Matched on rclone's ERROR/NOTICE lines carrying its own refusal
+    # wording, NOT on the bare word "immutable" anywhere in the output.
+    # This one test is what keeps every other source of that word out of the
+    # decision: the paths in rclone's own INFO lines, and the paths this
+    # script logs (CANON derives from $HOME, so our lines carry it too).
+    #
+    # A separate filter for our own lines is NOT needed and is deliberately
+    # absent: log() writes `[YYYY-MM-DD HH:MM:SS] r2-push: …`, which carries
+    # no level marker, so no line this script writes can satisfy the match
+    # below. A second guard that no test could fail is the dead guard round
+    # 4c-3 L-1 removed elsewhere.
+    #
+    # The level marker is matched as a TOKEN, not at the line start.
+    # rclone's --log-format defaults to `date,time`, so every line it writes
+    # to --log-file is `YYYY/MM/DD HH:MM:SS LEVEL : …` and an anchored
+    # `^(ERROR|NOTICE)` matches nothing it ever emits — verified on the
+    # deployed log, where 9,314 lines carry a level and zero match the
+    # anchor, and against the binary, whose strings hold the layout
+    # `2006/01/02 15:04:05` and the level format `%-6s: %s` (audit round
+    # 4c-6, finding C1). That padding is also why the marker may be
+    # `ERROR :` with a space but `NOTICE:` without one.
+    # rclone logs one INFO line per transferred object naming its relative
+    # path, so a single project slug containing the word — say
+    # `-home-shawn-immutable-notes` — turned every transport failure into a
+    # corruption abort (audit round 4c-5, finding L1).
+    #
+    # Only $LOG_FILE is read, never rclone's stderr. rclone writes its
+    # refusals to the --log-file we give it, so in practice the two agree;
+    # but if a future rclone reported one ONLY on stderr, this classifier
+    # would call it exit 2, "safe to retry". That is the safe direction and
+    # is left as it is deliberately (round 4c-5, finding L5): the retry is
+    # harmless — --immutable refuses again rather than overwriting — so the
+    # cost is a wasted run and a second identical failure, whereas teeing
+    # stderr into the shared append-only log would put text we do not
+    # control into the file the next run classifies against.
+    #
+    # What is ATTESTED, and what is merely defensive — the two are not the
+    # same and an earlier revision of this comment ran them together (audit
+    # round 4c-7, finding M-1).
+    #
+    # Attested by the deployed log, which carries both a level and the
+    # wording for two real refusals recorded 2026-09-09:
+    #
+    #   ERROR : CATALOG.json: Source and destination exist but do not
+    #           match: immutable file modified
+    #   NOTICE: Failed to copy: immutable file modified
+    #
+    # Note the levels: the SAME event is reported at ERROR on one line and
+    # NOTICE on another, which is why both are matched.
+    #
+    # Attested only as WORDING, by `strings $(command -v rclone) | grep -i
+    # immutable` on v1.74.2: the string "Timestamp mismatch between
+    # immutable objects!" exists in the binary. Its LEVEL is unverified and
+    # it occurs zero times in the deployed log, so it is matched
+    # defensively, at either level, and must not be read as observed.
+    #
+    # If a future rclone adds a phrasing not listed here, this classifier
+    # fails SAFE: the run exits 2 ("safe to retry") rather than 3, so the
+    # mistake is a wasted retry, not a missed corruption signal reported as
+    # an abort.
+    #
+    # ONE grep, and no pipe. Chaining `… | grep -q …` looks equivalent and
+    # is not: `grep -q` exits at its first match, the upstream grep then
+    # dies of SIGPIPE, and the whole pipeline returns 141 under `pipefail`
+    # — so the `if` took the FALSE branch and a real refusal was reported
+    # "safe to retry", but only once more than a pipe buffer (~64 KB) of
+    # marker-level output followed the refusal in the same run. That is the
+    # ordinary regime here: the deployed log holds 4,658 `ERROR :` lines in
+    # 2.5 MB (audit round 4c-7, finding C-1). A here-string has no
+    # upstream process to kill.
+    refusal_re='(^|[[:space:]])(ERROR|NOTICE)[[:space:]]*:.*'
+    refusal_re+='(immutable file modified|immutable objects)'
+    if grep -qE "$refusal_re" <<< "$this_run_output"; then
         log "r2-push: ABORTED — rclone refused to modify an object already" \
             "in R2 (--immutable). The archive is append-only, so a" \
             "canonical file whose size or modtime changed is a corruption" \
@@ -277,11 +434,12 @@ if [[ $DRY_RUN -eq 1 ]]; then
     # exiting with rclone's raw status — and rclone's exit 1 would then read
     # as this script's "precondition not met, skipped" (round 4c-4, L-6).
     rc=0
-    "$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" --dry-run "$CANON/" "$DEST/" \
-        || rc=$?
+    "$RCLONE_BIN" copy "${RCLONE_COPY_FLAGS[@]}" --dry-run \
+        "$CANON/" "$DEST/" || rc=$?
     if [[ $rc -ne 0 ]]; then
         classify_failure_and_exit "$rc" "$log_bytes_before" "dry-run rclone"
     fi
+    push_catalogue dry-run
     log "r2-push: dry-run complete"
     exit 0
 fi
@@ -293,9 +451,12 @@ log "r2-push: copy $CANON/ → $DEST/ (additive, no delete, no overwrite)"
 # "exited non-zero (rc=0)" every time (round 4c-4, finding 5). Captured
 # inside the branch instead.
 rc=0
-"$RCLONE_BIN" copy "${RCLONE_FLAGS[@]}" "$CANON/" "$DEST/" || rc=$?
-if [[ $rc -eq 0 ]]; then
-    log "r2-push: complete"
-    exit 0
+"$RCLONE_BIN" copy "${RCLONE_COPY_FLAGS[@]}" "$CANON/" "$DEST/" || rc=$?
+if [[ $rc -ne 0 ]]; then
+    classify_failure_and_exit "$rc" "$log_bytes_before" "rclone"
 fi
-classify_failure_and_exit "$rc" "$log_bytes_before" "rclone"
+
+# Only now, with every archive object safely uploaded, publish the index.
+push_catalogue live
+log "r2-push: complete"
+exit 0
