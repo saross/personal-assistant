@@ -81,6 +81,7 @@ import shlex
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -270,6 +271,49 @@ class SessionRequest:
 #: allows only ASCII letters, digits, underscores, and hyphens.
 CUSTOM_ID_MAX_CHARS = 64
 CUSTOM_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class SessionIdError(ValueError):
+    """A session id cannot be used to name a response or a batch entry."""
+
+
+def validate_session_id(session_id: Any, *, where: str) -> str:
+    """Return ``session_id`` unchanged, or explain why it cannot be used.
+
+    One rule, checked at both entry points that commit to an id: the
+    submission that pays for a batch, and the repair that rebuilds the map
+    afterwards. They must agree, because the id has to round-trip
+    byte-for-byte between them — ``build_custom_id`` hashes it and the
+    response filename is built from it.
+
+    Whitespace is REFUSED rather than stripped for that reason. Stripping
+    here would make the repair reconstruct ``sess-abc`` for an id that was
+    submitted as ``" abc "`` and stored under ``" abc .json"``, and the two
+    would never meet again.
+
+    Args:
+        session_id: the value to check.
+        where: what to name in the message (a manifest path, a position).
+
+    Raises:
+        SessionIdError: not a string, empty, blank, or carrying leading or
+            trailing whitespace.
+    """
+    if not isinstance(session_id, str):
+        raise SessionIdError(
+            f"{where}: session_id is {type(session_id).__name__}, not a string"
+        )
+    if not session_id.strip():
+        raise SessionIdError(
+            f"{where}: session_id is empty or blank, so it names no session"
+        )
+    if session_id != session_id.strip():
+        raise SessionIdError(
+            f"{where}: session_id {session_id!r} has leading or trailing "
+            "whitespace; it would not round-trip between the batch and the "
+            "response filename"
+        )
+    return session_id
 
 
 def build_custom_id(session_id: str) -> str:
@@ -510,11 +554,38 @@ def parse_response_json(raw_text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry so a rename survives a crash. Best effort.
+
+    Without this the renamed name itself can be lost even though the file's
+    contents reached the disk. Filesystems that refuse a directory fsync
+    (some network mounts) are not an error: durability degrades to what the
+    filesystem offers, and the write has already succeeded.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Write ``text`` beside ``path`` and ``os.replace`` it into position.
 
     On POSIX the rename is atomic, so a reader sees either the whole old file
     or the whole new one — never a half-written response.
+
+    Raises:
+        OSError: the write, the flush, or the rename failed. The message
+            names the file: this is called in a loop over a batch's
+            responses, and an unadorned "No space left on device" leaves the
+            operator without the one fact they need — which response is
+            missing.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle_fd, tmp_name = tempfile.mkstemp(
@@ -530,9 +601,18 @@ def _atomic_write(path: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
+    except OSError as exc:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise OSError(f"could not write {path}: {exc}") from exc
     except BaseException:
+        # Anything else (a KeyboardInterrupt, a caller's TypeError from
+        # serialisation) is not a write failure: clean up the temp file and
+        # let it through unchanged rather than relabelling it.
         Path(tmp_name).unlink(missing_ok=True)
         raise
+    # After the rename, not before: it is the directory entry that needs
+    # flushing, and only once the entry exists.
+    _fsync_directory(path.parent)
 
 
 def write_json_atomic(path: Path, payload: Any) -> None:
@@ -735,30 +815,28 @@ def state_manifest_path(state: dict[str, Any]) -> str | None:
     TypeError at the END of a retrieval, after the responses were written.
     """
     path = state.get("manifest_path")
-    return path if isinstance(path, str) and path else None
+    if isinstance(path, str) and path:
+        return path
+    if path is not None:
+        # Not silence: a state whose manifest_path is a number or a list
+        # behaves exactly like one that records nothing, and the operator
+        # would otherwise have no way to tell those apart.
+        print(
+            f"[haiku] the batch state records manifest_path as "
+            f"{type(path).__name__} ({path!r}), which is not a usable path; "
+            "treating it as unrecorded.",
+            file=sys.stderr,
+        )
+    return None
 
 
-def known_session_ids(
-    state: dict[str, Any], manifest_path: Path | None = None
-) -> set[str]:
-    """Best-effort set of session ids a manifest lists.
+def _read_manifest_session_ids(path: str) -> set[str] | None:
+    """Return the session ids ``path`` lists, or None if it cannot be used.
 
-    Args:
-        state: the batch state, which may record the manifest it was
-            submitted against.
-        manifest_path: a manifest supplied on THIS invocation, which wins.
-            Without it a repair run could not see the manifest it had just
-            been given: the state's own record may be absent (an old-format
-            file) or stale.
-
-    The manifest is not required to exist — the state may name a path that
-    has since moved, and older states name none at all. Every failure is a
-    quiet empty set: this feeds a diagnostic, and a diagnostic that raises
-    is worse than one that is vague.
+    None and the empty set are deliberately different: a manifest that
+    cannot be read must not look like one that lists nothing, because the
+    caller falls back on the first and not on the second.
     """
-    path = str(manifest_path) if manifest_path is not None else state_manifest_path(state)
-    if path is None:
-        return set()
     try:
         manifest = json.loads(Path(path).read_text())
     except (OSError, ValueError) as exc:
@@ -766,20 +844,18 @@ def known_session_ids(
         # not recoverable" and conclude the id was a digest, when in fact
         # the manifest that would have named it simply could not be read.
         print(
-            f"[haiku] could not read the manifest at {path}: {exc}. Session "
-            "ids will be guessed from the custom_id shape; pass --manifest "
-            "with a readable copy to name them exactly.",
+            f"[haiku] could not read the manifest at {path}: {exc}.",
             file=sys.stderr,
         )
-        return set()
+        return None
     sessions = manifest.get("sessions") if isinstance(manifest, dict) else None
     if not isinstance(sessions, list):
         print(
             f"[haiku] {path} has no 'sessions' list, so it cannot name any "
-            "session; ids will be guessed from the custom_id shape.",
+            "session.",
             file=sys.stderr,
         )
-        return set()
+        return None
     return {
         entry["session_id"]
         for entry in sessions
@@ -787,7 +863,57 @@ def known_session_ids(
     }
 
 
-def custom_id_lookup(session_ids: set[str] | frozenset[str]) -> dict[str, str]:
+def resolve_manifest(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> tuple[set[str], str | None]:
+    """Return the session ids to recover with, and the manifest they came from.
+
+    A manifest supplied on this invocation wins — a repair run must be able
+    to see the file it was just handed, since the state's own record may be
+    absent or stale. But winning is conditional on being READABLE: a typo'd
+    ``--manifest`` used to defeat a perfectly good recorded one, so the run
+    reported ids as unrecoverable that it could have named, and printed a
+    remedy line repeating the typo. An unusable supplied path now falls
+    back, and both paths are named.
+
+    Returns:
+        ``(session_ids, manifest_used)``. ``manifest_used`` is None when
+        nothing readable was found, so a remedy line names the placeholder
+        rather than a path already known to be broken.
+    """
+    recorded = state_manifest_path(state)
+    supplied = str(manifest_path) if manifest_path is not None else None
+
+    if supplied is not None:
+        found = _read_manifest_session_ids(supplied)
+        if found is not None:
+            return found, supplied
+        if recorded is not None and recorded != supplied:
+            print(
+                f"[haiku] falling back to the manifest recorded in the batch "
+                f"state ({recorded}) because the supplied --manifest "
+                f"({supplied}) could not be used.",
+                file=sys.stderr,
+            )
+            found = _read_manifest_session_ids(recorded)
+            if found is not None:
+                return found, recorded
+        return set(), None
+
+    if recorded is None:
+        return set(), None
+    found = _read_manifest_session_ids(recorded)
+    return (found, recorded) if found is not None else (set(), None)
+
+
+def known_session_ids(
+    state: dict[str, Any], manifest_path: Path | None = None
+) -> set[str]:
+    """The session ids ``resolve_manifest`` finds; kept for callers wanting only those."""
+    return resolve_manifest(state, manifest_path)[0]
+
+
+def custom_id_lookup(session_ids: Iterable[str]) -> dict[str, str]:
     """Map ``custom_id -> session id`` for a set of known session ids.
 
     Built once per retrieval rather than re-hashing every known id for
@@ -902,15 +1028,13 @@ def rebuild_custom_id_map(out_dir: Path, manifest_path: Path) -> int:
             "rebuild from; the batch state was left unchanged"
         )
     for position, entry in enumerate(sessions, 1):
-        session_id = entry.get("session_id") if isinstance(entry, dict) else None
-        # ``strip()``: a whitespace-only id is as unusable as an empty one.
-        # It would name a response file "   .json" and hash to a custom_id
-        # nothing could ever be matched back to.
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ManifestFormatError(
-                f"{manifest_path}: session {position} has no usable string "
-                "'session_id'; no mapping was written"
+        raw = entry.get("session_id") if isinstance(entry, dict) else None
+        try:
+            session_id = validate_session_id(
+                raw, where=f"{manifest_path}: session {position}"
             )
+        except SessionIdError as exc:
+            raise ManifestFormatError(f"{exc}; no mapping was written") from exc
         custom_id = build_custom_id(session_id)
         clash = from_manifest.get(custom_id)
         if clash is not None and clash != session_id:
@@ -1035,10 +1159,14 @@ def haiku_submit(
             batch_state_conflict(out_dir, manifest_path) or "batch already submitted"
         )
 
-    # Injectivity is checked BEFORE the billed create call: the state file
-    # maps custom_id -> session_id, so a collision would drop a session from
-    # the map and write one session's output under another's name — after
-    # the batch had been paid for.
+    # Both checks happen BEFORE the billed create call. An unusable session
+    # id cannot name a response file, and an id that collides would drop a
+    # session from the state map and write one session's output under
+    # another's name — either way, after the batch had been paid for.
+    for position, request in enumerate(requests, 1):
+        validate_session_id(
+            request.session_id, where=f"manifest session {position}"
+        )
     custom_to_session = {r.custom_id: r.session_id for r in requests}
     if len(custom_to_session) != len(requests):
         seen: dict[str, str] = {}
@@ -1122,10 +1250,10 @@ def haiku_apply(
 
     # Read once, before the loop: it turns a guessed session id into a
     # confirmed one, and it is a file read.
-    manifest_lookup = custom_id_lookup(known_session_ids(state, manifest_path))
-    effective_manifest = (
-        str(manifest_path) if manifest_path else state_manifest_path(state)
+    manifest_session_ids, effective_manifest = resolve_manifest(
+        state, manifest_path
     )
+    manifest_lookup = custom_id_lookup(manifest_session_ids)
 
     batch_job = client.messages.batches.retrieve(batch_id)
     if batch_job.processing_status != "ended":
@@ -2090,15 +2218,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Which provider adapter to exercise (omit for --build-rubric).",
     )
     # --manifest and --prompt are NOT required at the parser level: the
-    # retrieval path (--haiku-apply) reads neither, and demanding them there
-    # made the recovery line this script prints un-runnable as printed. The
-    # modes that do need them check for them explicitly, below.
+    # retrieval path (--haiku-apply) can run without either, and demanding
+    # them there made the recovery line this script prints un-runnable as
+    # printed. The modes that do need them check for them explicitly, below.
     parser.add_argument(
         "--manifest",
         type=Path,
         help=(
             "Path to the sample manifest JSON. Required for a dry run, a "
-            "live run, and --build-rubric; unused by --haiku-apply."
+            "live run, and --build-rubric. Optional but used by "
+            "--haiku-apply: it names the sessions behind unmatched "
+            "custom_ids and is what --rebuild-map restores the map from."
         ),
     )
     parser.add_argument(
@@ -2278,9 +2408,21 @@ def main(argv: list[str] | None = None) -> int:
             except (FileNotFoundError, ManifestFormatError) as exc:
                 print(f"--rebuild-map refused: {exc}", file=sys.stderr)
                 return 2
+            state_after = read_batch_state(target_dir) or {}
+            recorded = state_manifest_path(state_after)
+            provenance = f" from {args.manifest}"
+            if recorded and recorded != str(args.manifest):
+                # The asymmetry is deliberate (the recorded path is the
+                # submission's provenance and is never overwritten), but it
+                # is confusing unseen: the map was rebuilt from one file
+                # while the state still names another.
+                provenance += (
+                    f"; the state still records {recorded} as the manifest "
+                    "it was submitted against"
+                )
             print(
                 f"[haiku] --rebuild-map restored {restored} custom_id "
-                f"mapping(s) in {target_dir / 'batch-state.json'}"
+                f"mapping(s) in {target_dir / 'batch-state.json'}{provenance}"
             )
         load_env()
         # submit persists batch-state.json under the provider subdir
