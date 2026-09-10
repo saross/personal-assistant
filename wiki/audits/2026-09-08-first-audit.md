@@ -1309,9 +1309,29 @@ report's last paragraph.
 
 Operator actions pending, in order of consequence:
 
-1. Re-run phase 1 (`phase1_pipeline.py --clean-corpus`), then promotion,
+1. ~~Re-run phase 1 (`phase1_pipeline.py --clean-corpus`), then promotion,
    then re-derive the guide — required after #128 merges (metric
-   definitions changed; the interlock refuses the old results).
+   definitions changed; the interlock refuses the old results).~~
+   **Done 2026-09-10 10:xx** (Shawn approved installing the stack):
+   `numpy`, `scipy`, `scikit-learn`, `spacy` 3.8.16, and
+   `en_core_web_sm` 3.8.0 installed into the project venv and added to
+   `requirements.txt` (2ecc6e0); the step-2 manifest rebuilt from the
+   durable extraction output as `data/style-corpus/extract-input-
+   manifest.json` (the agent document's recipe; the extractor's own copy
+   does not exist yet because extraction has not been re-run); phase 1
+   re-run over the 18 clean bundles and `phase1-results-clean.json` now
+   carries `metric_schema` version 2 (the redefined metrics moved as
+   documented: hapax ratio 0.0344 → 0.4158 over types; passive and
+   nominalisation now means of papers; n_words 127,720 → 127,718 under
+   NFC); `phase3_promotion.py` re-run, exit 0, its output stamped 2;
+   both committed to the data submodule (fb1e9a0). Phase 1 exits 1
+   because 12 of 13 "regression vs run 1" anchors are out of tolerance —
+   this is PRE-EXISTING (the previous clean file also passed 1 of 13):
+   the anchors in plan §2.5 were calibrated on the raw run-1 corpus
+   (139,105 words, references included), not the clean corpus. Decision
+   D9 below. The guide itself (`phase3_guide_verifier`, phase 5) has NOT
+   been re-derived — that is the analyser agent's run, not an operator
+   step.
 2. Run `sync-to-postgres.py` before any `archive-memories --apply` or
    `dedup-memories` (both refuse while the cursor is behind or unreadable).
 3. Agree an `ENV_FINGERPRINT_SALT` out of band before the next cross-machine
@@ -1339,7 +1359,8 @@ Operator actions pending, in order of consequence:
 9. Decisions D1-D8 below; the dependency additions for the style analyser
    (`numpy`, `scipy`, `scikit-learn`, `spacy` + `en_core_web_sm==3.8.0`); the
    nominalisation stop-list; `data/.gitignore` for `logs/*.json` (AR26);
-   whether the dedup journal stays committed.
+   whether the dedup journal stays committed. The dependency additions are
+   **resolved** (installed and in `requirements.txt`, 2026-09-10).
 
 ## Stop point 2026-09-09 16:5x (resume here)
 
@@ -1387,6 +1408,16 @@ agent's own `mktemp -d`; the venv's `pytest` is
 PATH).
 
 ## Decisions for Shawn
+
+**D9 (added 2026-09-10) — re-baseline the phase-1 regression anchors.**
+`phase1_pipeline.py` compares thirteen "regression vs run 1" anchors
+against the 2026-05 raw-corpus run (139,105 words) with `exact` or ±2 %
+tolerances; the clean corpus (127,718 words, references separated) has
+failed 12 of 13 since 2026-05-24, so every clean run exits 1 although its
+results are written and stamped. Either re-baseline the anchors to the
+clean corpus (a one-off table edit in `phase1_pipeline.py`, plan §2.5) so
+exit 1 means something again, or drop the anchors for the clean path.
+Recommendation: re-baseline to today's values and keep the ±2 % bands.
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
    process the window in chunks of 30, which multiplies Haiku calls on the 5% of
