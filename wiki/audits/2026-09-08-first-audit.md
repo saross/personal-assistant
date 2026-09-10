@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-one PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-three PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -757,9 +757,9 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
 #136, #141
-(archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
-one);
-#142, #146, #150 (bake-off rounds 4e-5 to 4e-7).
+(archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
+then one, then two);
+#142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
 
 Open, each with its verdict so far:
 
@@ -854,8 +854,22 @@ Open, each with its verdict so far:
   derivation checked structurally for all nine constants across six
   scripts; dead constants removed; the last layout literal derived; the
   agent document's example completed with a doc-to-code test; the
-  newer-than-code stamp wording corrected. Coordinator suite, push, and
-  second re-audit pending.
+  newer-than-code stamp wording corrected. Coordinator suite 4492
+  passed, 19 deselected, exit 0 (the numpy skips gone now the stack is
+  installed); pushed. Second re-audit verdict merge — C1 closed at
+  runtime (phase 3 unstamped → exit 2 before any spaCy load; a
+  comprehension is no longer possible; the re-read-by-comprehension
+  mutation fails both new tests); the six consumers now accept the live
+  stamped files. **Merged 2026-09-10.** DEFERRED follow-ups: the
+  derivation check is a shape check (a hard-coded base passed to the
+  helper passes; correct indirection through a constant fails); the
+  "no re-read" guarantee rests on the `payloads` unpack plus a substring
+  scan for `load_json` (a re-read spelled `json.loads(...read_text())`
+  added after the unpack survives, in both scripts); the doc-example
+  regex crosses fence boundaries (an earlier bash block in the document
+  would break the test); the example's path values unchecked; the
+  argument order into `load_corpus_space` unpinned (fail-loud at
+  runtime); nested `add_argument` calls not recovered.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
@@ -995,7 +1009,19 @@ Open, each with its verdict so far:
   test moved to the front of `say_data_remedy`; `assert_composed`
   requires each marker exactly once; the trim-set extraction parses
   whole argument lists and refuses non-integer literals. Coordinator
-  suite, push, and second re-audit pending.
+  suite 4502 passed, 19 deselected, exit 0; pushed. Second re-audit
+  verdict "merge after M-1": all six matrix rows hold through the real
+  script and every claimed kill re-verified, but the new
+  `assert_no_destructive_advice()` duplicates the fragment from the
+  script and no positive control requires the word "entirely", so a
+  benign rewording disarms it (124 passed with a re-injected regression);
+  and `submodule_state` is never re-read after a successful init, so a
+  just-cloned submodule lacking `local.md` still gets the destructive
+  sentence (bounded: `data/` was empty). Round 4d-8 (closing): derive the
+  fragment from the script source, gate the destructive branch on
+  `WOULD_INIT -eq 0`, pin step 1's remedy; then merge on a green suite
+  with the one-line test fix verified by mutation rather than a third
+  re-audit.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
@@ -1207,7 +1233,33 @@ Open, each with its verdict so far:
   pinned by the pre-existing test, not the new one). **DEFERRED** (stop
   point 2026-09-09 16:4x): PR #147 stays open on `claude/audit-round4c-5`
   in the 4c worktree; round 4c-7 takes C-1, M-1, M-2, then a third
-  re-audit.
+  re-audit. Resumed 2026-09-10: round 4c-7 delivered (e813336, 9d5e404):
+  one `grep -qE` over a here-string, no pipe, reproduced at every scale
+  (1,000 trailing marker lines: 2 before, 3 after); a repository-scope
+  lint (`tests/test_pipefail_grep_lint.py`, importing the daily-sync
+  tokeniser) that on its first run found two MORE `| grep -q` sites in
+  the same script (`df … | tail -1 | grep -q` at :179 and `listremotes |
+  grep -q` at :184), both fixed rather than allow-listed; the attested
+  levels separated from the defensive match; `--log-format date,time`
+  pinned; the dry run prints the sizeless remedy. And the LIVE fix Shawn
+  approved: `CATALOG.json` is excluded from the immutable copy
+  (`--exclude "/CATALOG.json"`) and pushed afterwards with `rclone
+  copyto` without `--immutable`; the copyto runs only after a successful
+  copy, its failure is exit 2 ("the archive copy SUCCEEDED, only the
+  derived index is stale"), an absent catalogue is skipped, and the dry
+  run previews both. Merged with main (032d48d), coordinator suite 4541
+  passed, 19 deselected, exit 0; pushed. Third re-audit verdict merge:
+  no pipe anywhere in the classifier, the scale table reproduced (3 at
+  every size, 2 with no refusal; a bash here-string above the pipe
+  buffer is a temp file, so nothing can be SIGPIPEd), the lint real and
+  the repository clean, every attestation checked against the deployed
+  log, the copyto argv right and a copyto failure unable to reach exit 3.
+  One test-integrity medium: the copy-before-copyto ordering guard is
+  hollow (the `_rclone_writing` stub never records argv), taken in a
+  closing round 4c-8 with two dead-comment/dead-assignment lows; deferred
+  lows: no fixture exceeds ten manifest entries; the lint skips
+  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Merge on a green
+  suite after the one-line fix.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1283,8 +1335,30 @@ Open, each with its verdict so far:
   write failures re-raised with the path. The agent's shell died on a
   full /tmp after its green clean-copy run (4486 passed); its work
   directory was removed by hand. Merged with main (dd046f8); coordinator
-  suite 4487 passed, 2 skipped, 19 deselected, exit 0; **PR #154, open,
-  re-audit DEFERRED** (stop point).
+  suite 4487 passed, 2 skipped, 19 deselected, exit 0; **PR #154, merged
+  165068a** 2026-09-10 (re-audit verdict merge: `create` never reached
+  for an unusable id; the decision table, validation order, fsync order,
+  and fd hygiene confirmed). Its three coverage gaps — a readable
+  manifest naming no session still defeats a good recorded one silently
+  and prints a remedy the rebuild path refuses; submit validation pinned
+  by single-session fixtures only; the directory-fsync target unpinned —
+  plus an uncaught `SessionIdError` after the cost gate, the ENOSPC
+  decoration missing `mkstemp`, a collapsed exception type, a duplicate
+  diagnostic, an unguarded `build_custom_id`, and a mis-scoped help
+  slice are round 4e-9 (`claude/audit-round4e-9`), the last on this
+  branch for the cycle. Round 4e-9 delivered (9fa7533-4481e9b): a
+  sessionless supplied manifest falls back like an unreadable one,
+  naming both; a two-request fixture with the fault in the second id;
+  the fsync target stat'ed while open (the closed temp fd's number is
+  reused, which silently overwrote the agent's first attempt); the
+  session-id check before the cost gate with exit 2; `mkdir`/`mkstemp`
+  inside the decorated block; the same exception class re-raised with
+  errno intact and the path in `strerror`; the malformed-path
+  diagnostic reported once by parameter (a state-dict marker was
+  rejected as a leak); `assemble_requests` validates first;
+  `known_session_ids` removed; the help slice scoped within the options
+  section. Merged with main (a163fcb); coordinator suite, PR, and
+  re-audit pending.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
@@ -1294,9 +1368,29 @@ report's last paragraph.
 
 Operator actions pending, in order of consequence:
 
-1. Re-run phase 1 (`phase1_pipeline.py --clean-corpus`), then promotion,
+1. ~~Re-run phase 1 (`phase1_pipeline.py --clean-corpus`), then promotion,
    then re-derive the guide — required after #128 merges (metric
-   definitions changed; the interlock refuses the old results).
+   definitions changed; the interlock refuses the old results).~~
+   **Done 2026-09-10 10:xx** (Shawn approved installing the stack):
+   `numpy`, `scipy`, `scikit-learn`, `spacy` 3.8.16, and
+   `en_core_web_sm` 3.8.0 installed into the project venv and added to
+   `requirements.txt` (2ecc6e0); the step-2 manifest rebuilt from the
+   durable extraction output as `data/style-corpus/extract-input-
+   manifest.json` (the agent document's recipe; the extractor's own copy
+   does not exist yet because extraction has not been re-run); phase 1
+   re-run over the 18 clean bundles and `phase1-results-clean.json` now
+   carries `metric_schema` version 2 (the redefined metrics moved as
+   documented: hapax ratio 0.0344 → 0.4158 over types; passive and
+   nominalisation now means of papers; n_words 127,720 → 127,718 under
+   NFC); `phase3_promotion.py` re-run, exit 0, its output stamped 2;
+   both committed to the data submodule (fb1e9a0). Phase 1 exits 1
+   because 12 of 13 "regression vs run 1" anchors are out of tolerance —
+   this is PRE-EXISTING (the previous clean file also passed 1 of 13):
+   the anchors in plan §2.5 were calibrated on the raw run-1 corpus
+   (139,105 words, references included), not the clean corpus. Decision
+   D9 below. The guide itself (`phase3_guide_verifier`, phase 5) has NOT
+   been re-derived — that is the analyser agent's run, not an operator
+   step.
 2. Run `sync-to-postgres.py` before any `archive-memories --apply` or
    `dedup-memories` (both refuse while the cursor is behind or unreadable).
 3. Agree an `ENV_FINGERPRINT_SALT` out of band before the next cross-machine
@@ -1324,7 +1418,8 @@ Operator actions pending, in order of consequence:
 9. Decisions D1-D8 below; the dependency additions for the style analyser
    (`numpy`, `scipy`, `scikit-learn`, `spacy` + `en_core_web_sm==3.8.0`); the
    nominalisation stop-list; `data/.gitignore` for `logs/*.json` (AR26);
-   whether the dedup journal stays committed.
+   whether the dedup journal stays committed. The dependency additions are
+   **resolved** (installed and in `requirements.txt`, 2026-09-10).
 
 ## Stop point 2026-09-09 16:5x (resume here)
 
@@ -1372,6 +1467,16 @@ agent's own `mktemp -d`; the venv's `pytest` is
 PATH).
 
 ## Decisions for Shawn
+
+**D9 (added 2026-09-10) — re-baseline the phase-1 regression anchors.**
+`phase1_pipeline.py` compares thirteen "regression vs run 1" anchors
+against the 2026-05 raw-corpus run (139,105 words) with `exact` or ±2 %
+tolerances; the clean corpus (127,718 words, references separated) has
+failed 12 of 13 since 2026-05-24, so every clean run exits 1 although its
+results are written and stamped. Either re-baseline the anchors to the
+clean corpus (a one-off table edit in `phase1_pipeline.py`, plan §2.5) so
+exit 1 means something again, or drop the anchors for the clean path.
+Recommendation: re-baseline to today's values and keep the ±2 % bands.
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
    process the window in chunks of 30, which multiplies Haiku calls on the 5% of

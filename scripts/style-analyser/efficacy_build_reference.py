@@ -57,8 +57,12 @@ def _phase5():
     return p5
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENT_DIR = REPO_ROOT / "data/experiments/style-efficacy-2026-05-31"
+#: Derived from style_support so that repointing one base moves EVERY path
+#: in the experiment together (round 4g-5, item L-b2). It did not: the base
+#: moved --judge-dir and --key-dir while --passages-dir and four other
+#: scripts kept their own hard-coded copy, so a "second experiment" would
+#: have been assembled half in one directory and half in another.
+EXPERIMENT_DIR = style_support.experiment_root()
 
 
 def json_safe(obj):

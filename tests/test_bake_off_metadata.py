@@ -2044,10 +2044,15 @@ class TestStrandedResults:
         """
         long_id = "subagent-explore-" + "z" * 80
         digest = hashlib.sha256(long_id.encode("utf-8")).hexdigest()[:40]
-        lookup = bom.custom_id_lookup({long_id, digest})
+        # Hex sorts before "s", so the digest is the sorted winner. Passed
+        # as a LIST in the opposite order: a set's iteration order varies
+        # with the hash seed, which let an unsorted implementation pass
+        # about a third of runs.
+        assert digest < long_id
+        lookup = bom.custom_id_lookup([long_id, digest])
         assert len(lookup) == 1
-        assert lookup[bom.build_custom_id(long_id)] == min(long_id, digest)
-        assert bom.custom_id_lookup(set()) == {}
+        assert lookup[bom.build_custom_id(long_id)] == digest
+        assert bom.custom_id_lookup([]) == {}
         assert bom.recover_session_id_from_custom_id("sess-x", {}) == "x"
 
     def test_known_session_ids_survives_a_missing_or_broken_manifest(
@@ -2071,7 +2076,9 @@ class TestStrandedResults:
         assert "no 'sessions' list" in capsys.readouterr().err
 
     @pytest.mark.parametrize("recorded", [123, ["a"], {"p": 1}, None, ""])
-    def test_a_non_string_manifest_path_is_ignored_everywhere(self, recorded):
+    def test_a_non_string_manifest_path_is_ignored_everywhere(
+        self, recorded, capsys
+    ):
         """The state is an editable JSON file; every reader must survive it.
 
         rebuild_map_command interpolated whatever it found, so a numeric
@@ -2086,6 +2093,110 @@ class TestStrandedResults:
             "batch_001", Path("/tmp/out/haiku"), bom.state_manifest_path(state)
         )
         assert bom.MANIFEST_PLACEHOLDER in command
+        # A malformed value is not the same as no value, and the operator
+        # cannot see the difference unless we say so. None and "" record
+        # nothing and are correctly silent.
+        printed = capsys.readouterr().err
+        if recorded is None:
+            # Absent is not malformed: nothing was claimed, so say nothing.
+            assert printed == ""
+        else:
+            # An empty string is malformed too — something was recorded and
+            # it cannot be used, which is exactly the case worth naming.
+            assert type(recorded).__name__ in printed
+            assert "not a usable path" in printed
+
+    def test_an_unreadable_supplied_manifest_falls_back_to_the_recorded_one(
+        self, tmp_path, capsys
+    ):
+        """A typo must not defeat a manifest the state already names.
+
+        The supplied path used to win unconditionally, so a mistyped
+        --manifest made ids unrecoverable that omitting the flag entirely
+        would have named -- and the remedy line then repeated the typo.
+        """
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "recorded.jsonl", n_records=6
+        )
+        good = fx.write_manifest(
+            tmp_path / "recorded.json",
+            [fx.manifest_row("recorded-session", transcript)],
+        )
+        typo = tmp_path / "recorded.jsonn"
+        state = {"batch_id": "batch_001", "manifest_path": str(good)}
+
+        found, used = bom.resolve_manifest(state, typo)
+        assert found == {"recorded-session"}
+        assert used == str(good)
+        printed = capsys.readouterr().err
+        assert str(typo) in printed
+        assert str(good) in printed
+        assert "falling back" in printed
+
+    def test_a_readable_supplied_manifest_still_wins(self, tmp_path, capsys):
+        """The fallback must not undo the point of supplying one."""
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "supplied.jsonl", n_records=6
+        )
+        supplied = fx.write_manifest(
+            tmp_path / "supplied.json",
+            [fx.manifest_row("supplied-session", transcript)],
+        )
+        recorded = fx.write_manifest(
+            tmp_path / "recorded.json",
+            [fx.manifest_row("recorded-session", transcript)],
+        )
+        found, used = bom.resolve_manifest(
+            {"manifest_path": str(recorded)}, supplied
+        )
+        assert found == {"supplied-session"}
+        assert used == str(supplied)
+        assert capsys.readouterr().err == ""
+
+    def test_nothing_readable_leaves_the_remedy_on_the_placeholder(
+        self, tmp_path, capsys
+    ):
+        """Never repeat a path already known to be broken."""
+        state = {"manifest_path": str(tmp_path / "also-missing.json")}
+        found, used = bom.resolve_manifest(state, tmp_path / "missing.json")
+        assert found == set()
+        assert used is None
+        capsys.readouterr()
+
+    def test_a_typo_does_not_defeat_recovery_end_to_end(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """The regression, at the entry point that would have shown it."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_id = "subagent-explore-" + "w" * 80
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "typo.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(session_id, transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(tmp_path / "manifest.jsonn"),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert f"probably session {session_id}" in printed
+        assert "not recoverable" not in printed
+        assert "manifest.jsonn" not in printed  # the typo is not repeated
 
     def test_a_numeric_manifest_path_does_not_crash_a_retrieval(
         self, tmp_path, capsys, anthropic_stub
@@ -2762,3 +2873,323 @@ class TestRebuildRefusesUnusableManifests:
         assert bom.rebuild_custom_id_map(out_dir, manifest) == 0
         state = json.loads((out_dir / "batch-state.json").read_text())
         assert state["custom_id_to_session"][custom_id] == "session-as-submitted"
+
+
+class TestOperatorFacingText:
+    """Help and progress lines are the only view an operator has."""
+
+    def test_the_manifest_help_says_apply_uses_it(self, capsys):
+        """The finding: it still said "unused by --haiku-apply".
+
+        Read from the real parser via --help, so the text cannot drift out
+        of step with what an operator is shown.
+        """
+        with pytest.raises(SystemExit) as excinfo:
+            bom.main(["--help"])
+        assert excinfo.value.code == 0
+        # argparse re-wraps help text, so compare on collapsed whitespace,
+        # and scope to --manifest's own entry: --prompt genuinely IS unused
+        # by --haiku-apply, so a whole-text search would match that instead
+        # and pass or fail for the wrong reason.
+        help_text = " ".join(capsys.readouterr().out.split())
+        start = help_text.index("Path to the sample manifest")
+        manifest_help = help_text[start:help_text.index("--prompt PROMPT", start)]
+        assert "unused by --haiku-apply" not in manifest_help
+        assert "Optional but used by --haiku-apply" in manifest_help
+        assert "what --rebuild-map restores the map from" in manifest_help
+        # --prompt's wording stays: the retrieval path really does not read it.
+        assert "unused by --haiku-apply" in help_text[help_text.index("--prompt PROMPT"):]
+
+    def test_the_restored_line_names_the_manifest_used(self, tmp_path, capsys):
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "named.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "repair.json", [fx.manifest_row("named-session", transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        restored = bom.rebuild_custom_id_map(out_dir, manifest)
+        assert restored == 1
+        # Drive the entry point for the printed line.
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(manifest),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        printed = capsys.readouterr().out
+        assert f"restored 1 custom_id mapping(s)" in printed
+        assert f"from {manifest}" in printed
+
+    def test_the_restored_line_names_both_when_they_differ(self, tmp_path, capsys):
+        """The X/Y asymmetry was documented only in a code comment."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "asym.jsonl", n_records=6
+        )
+        repair_with = fx.write_manifest(
+            tmp_path / "repair.json", [fx.manifest_row("asym-session", transcript)]
+        )
+        recorded = tmp_path / "originally-submitted.json"
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "manifest_path": str(recorded),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(repair_with),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        printed = capsys.readouterr().out
+        assert f"from {repair_with}" in printed
+        assert f"still records {recorded}" in printed
+
+
+class TestSessionIdsAreValidatedOnce:
+    """Submit and repair must agree on what a usable session id is."""
+
+    @pytest.mark.parametrize(
+        "session_id",
+        [None, 17, ["a"], "", "   ", "\t", " abc ", "abc ", " abc", "abc\n"],
+    )
+    def test_unusable_ids_are_refused(self, session_id):
+        with pytest.raises(bom.SessionIdError):
+            bom.validate_session_id(session_id, where="test")
+
+    @pytest.mark.parametrize(
+        "session_id", ["abc", "a-b-c-1234", "subagent-explore-2026-01-05"]
+    )
+    def test_usable_ids_pass_through_unchanged(self, session_id):
+        assert bom.validate_session_id(session_id, where="test") == session_id
+
+    def test_whitespace_is_refused_not_stripped(self):
+        """Stripping would break the round-trip the id has to survive.
+
+        build_custom_id hashes the id and the response filename is built
+        from it, so an id submitted as " abc " is stored under " abc .json"
+        and hashed as " abc ". A repair that silently stripped would
+        reconstruct sess-<hash of "abc"> and the two would never meet.
+        """
+        padded = " abc "
+        assert bom.build_custom_id(padded) != bom.build_custom_id("abc")
+        with pytest.raises(bom.SessionIdError, match="whitespace"):
+            bom.validate_session_id(padded, where="test")
+
+    def test_submit_refuses_a_blank_id_before_paying(self, tmp_path, monkeypatch):
+        """The finding: a "   " manifest submitted fine and was unrepairable."""
+        created: list = []
+
+        class FakeBatches:
+            def create(self, requests):
+                created.append(requests)
+                return type("Batch", (), {"id": "batch_001"})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "blank.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row("   ", transcript)]
+        )
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(bom.SessionIdError):
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        assert created == []
+        assert not (out_dir / "batch-state.json").exists()
+
+    def test_submit_refuses_a_padded_id_before_paying(self, tmp_path, monkeypatch):
+        created: list = []
+
+        class FakeBatches:
+            def create(self, requests):
+                created.append(requests)
+                return type("Batch", (), {"id": "batch_001"})()
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "padded.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row(" padded ", transcript)]
+        )
+        requests = bom.assemble_requests(manifest, _prompt_file(tmp_path))
+        out_dir = tmp_path / "haiku"
+        out_dir.mkdir()
+        with pytest.raises(bom.SessionIdError, match="whitespace"):
+            bom.haiku_submit(
+                requests, out_dir, "system prompt", manifest_path=manifest
+            )
+        assert created == []
+
+    @pytest.mark.parametrize("session_id", ["   ", " padded ", "padded "])
+    def test_rebuild_refuses_the_same_ids(self, tmp_path, session_id):
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_001", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(
+            json.dumps({"sessions": [{"session_id": session_id}]}),
+            encoding="utf-8",
+        )
+        before = (out_dir / "batch-state.json").read_bytes()
+        with pytest.raises(bom.ManifestFormatError):
+            bom.rebuild_custom_id_map(out_dir, manifest)
+        assert (out_dir / "batch-state.json").read_bytes() == before
+
+
+class TestAtomicWriteDurability:
+    """The rename must be durable, and a failure must name the file."""
+
+    def test_the_parent_directory_is_flushed_after_the_rename(
+        self, tmp_path, monkeypatch
+    ):
+        """A rename can be lost even when the contents reached the disk."""
+        import os as os_module
+
+        fsynced: list = []
+        real_fsync = os_module.fsync
+        real_replace = os_module.replace
+        renamed: list = []
+
+        def recording_fsync(fd):
+            fsynced.append(fd)
+            return real_fsync(fd)
+
+        def recording_replace(src, dst):
+            renamed.append(len(fsynced))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os_module, "fsync", recording_fsync)
+        monkeypatch.setattr(os_module, "replace", recording_replace)
+        bom.write_json_atomic(tmp_path / "responses" / "session.json", {"ok": True})
+        # One fsync on the temp file before the rename, one on the directory
+        # after it.
+        assert renamed == [1]
+        assert len(fsynced) == 2
+
+    def test_a_refused_directory_fsync_is_not_an_error(self, tmp_path, monkeypatch):
+        """Some network mounts refuse it; the write has already succeeded."""
+        import os as os_module
+
+        real_open = os_module.open
+
+        def refuse_directory_open(path, flags, *args, **kwargs):
+            # Only the directory handle: mkstemp needs os.open to work.
+            if os_module.path.isdir(path):
+                raise OSError("directory fsync unsupported")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os_module, "open", refuse_directory_open)
+        target = tmp_path / "session.json"
+        bom.write_json_atomic(target, {"ok": True})
+        assert json.loads(target.read_text()) == {"ok": True}
+
+    def test_a_write_failure_names_the_file(self, tmp_path, monkeypatch):
+        """In a loop over a batch, "No space left" alone is not actionable."""
+        import os as os_module
+
+        def refuse_replace(_src, _dst):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(os_module, "replace", refuse_replace)
+        target = tmp_path / "responses" / "session-42.json"
+        with pytest.raises(OSError) as excinfo:
+            bom.write_json_atomic(target, {"ok": True})
+        assert str(target) in str(excinfo.value)
+        assert "No space left on device" in str(excinfo.value)
+        assert list(target.parent.iterdir()) == []
+
+    def test_a_non_oserror_is_not_relabelled(self, tmp_path, monkeypatch):
+        """A KeyboardInterrupt is not a write failure."""
+        import os as os_module
+
+        def interrupt(_src, _dst):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(os_module, "replace", interrupt)
+        target = tmp_path / "session.json"
+        with pytest.raises(KeyboardInterrupt):
+            bom.write_json_atomic(target, {"ok": True})
+        assert list(tmp_path.iterdir()) == []
