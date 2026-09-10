@@ -1485,6 +1485,64 @@ Operator actions pending, in order of consequence:
    whether the dedup journal stays committed. The dependency additions are
    **resolved** (installed and in `requirements.txt`, 2026-09-10).
 
+## Closing summary (2026-09-10)
+
+**What was audited.** Every script under `scripts/` and `hooks/`, the
+slash-command definitions they serve, and their tests — nine tranches
+(0-8), each read by two fresh-context lenses (implementation
+correctness; test adequacy by mutation) before any fix was written.
+Fourteen lens reports produced about 190 anchored findings; every fix
+round was re-audited by a fresh agent before merging, forty-two round
+reports in all. Shawn stopped the first pass on 2026-09-09 16:5x for
+cost and resumed on 2026-09-10 to close the open branches; follow-ups
+found after that point are deferred and listed below.
+
+**What changed.** Thirty-six pull requests merged (#114-#127, #129-#154,
+#156; #155 pending its final narrow re-audit), about 800 commits on
+main, and the test suite grew from about 1,250 to about 4,650 tests.
+The defects with live consequences, all fixed and verified:
+
+- The daily sync could drop a stash whose tracked half had never landed,
+  commit a truncation already on disk unguarded, and lose the only copy
+  of an untracked file on a partial apply; it now tracks stashes by SHA,
+  never pops what it cannot prove, and refuses an unaccounted corpus
+  shrink.
+- The Postgres syncs and the indexer could silently skip refused rows and
+  hold a cursor past them; they now quarantine, gate on evidence, and
+  expose exit codes 4-9 at session start.
+- The memory-store writers could interleave and truncate under
+  concurrency; the readers and the drift sweep could fabricate a spike
+  from an unmounted repository set and mark absent anchors false.
+- The archive pipeline could publish a half-written temporary as a
+  permanent object; the R2 push's classifier could report a real
+  corruption signal as "safe to retry" (twice, by two different
+  mechanisms) and had been refusing the derived catalogue since
+  2026-09-09 — fixed and confirmed by a dry run against the bucket.
+- The style analyser measured four metrics under names whose definitions
+  had changed and scored new-definition inputs against an old-definition
+  corpus; a metric-schema interlock now refuses that, phase 1 has been
+  re-run under the new schema, and the scorer consumes the bytes it
+  checked.
+- `sync-symlinks.sh` could advise deleting the private data submodule;
+  `check-credentials.py` and the agent-mail hooks had the round-1 set of
+  defects fixed on day one.
+- The test suite itself gained a hermeticity guard: no network, no live
+  Postgres, the canonical store snapshotted and, in-process, watched
+  through the path the repository actually writes.
+
+**What it cost.** In the order of 25M subagent tokens over two days,
+roughly 45 fix rounds and 60 re-audits. Every branch's first re-audit
+found at least one critical in the fix code itself; the median branch
+needed three rounds. The two lessons worth keeping are in the
+scratchpad: build fixtures from an attested live shape and prove the
+test fails against the defect; put class-level lints at repository
+scope.
+
+**What remains** is in "Deferred" entries throughout (search
+`DEFERRED`), the decisions D1-D9, and operator actions 2-9 above. None
+of the deferred items changes a live result; the one with stakes is D6
+(private names in a public branch's history).
+
 ## Stop point 2026-09-09 16:5x (resume here)
 
 Shawn stopped the audit at this juncture for cost (about ten million
