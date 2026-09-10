@@ -886,8 +886,19 @@ def resolve_manifest(
 
     if supplied is not None:
         found = _read_manifest_session_ids(supplied)
-        if found is not None:
+        if found:
             return found, supplied
+        # An empty result is as useless as an unreadable one, and used to
+        # short-circuit here: a manifest that parsed but listed no session
+        # defeated a perfectly good recorded one in silence, so every
+        # stranded result "looked like a digest" and the remedy line named
+        # the very file the rebuild path then refuses.
+        if found is not None:
+            print(
+                f"[haiku] the supplied --manifest ({supplied}) lists no "
+                "sessions, so it can name nothing.",
+                file=sys.stderr,
+            )
         if recorded is not None and recorded != supplied:
             print(
                 f"[haiku] falling back to the manifest recorded in the batch "
@@ -896,21 +907,14 @@ def resolve_manifest(
                 file=sys.stderr,
             )
             found = _read_manifest_session_ids(recorded)
-            if found is not None:
+            if found:
                 return found, recorded
         return set(), None
 
     if recorded is None:
         return set(), None
     found = _read_manifest_session_ids(recorded)
-    return (found, recorded) if found is not None else (set(), None)
-
-
-def known_session_ids(
-    state: dict[str, Any], manifest_path: Path | None = None
-) -> set[str]:
-    """The session ids ``resolve_manifest`` finds; kept for callers wanting only those."""
-    return resolve_manifest(state, manifest_path)[0]
+    return (found, recorded) if found else (set(), None)
 
 
 def custom_id_lookup(session_ids: Iterable[str]) -> dict[str, str]:

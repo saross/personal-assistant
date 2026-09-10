@@ -2055,24 +2055,24 @@ class TestStrandedResults:
         assert bom.custom_id_lookup([]) == {}
         assert bom.recover_session_id_from_custom_id("sess-x", {}) == "x"
 
-    def test_known_session_ids_survives_a_missing_or_broken_manifest(
+    def test_resolve_manifest_survives_a_missing_or_broken_manifest(
         self, tmp_path, capsys
     ):
-        assert bom.known_session_ids({}) == set()
+        assert bom.resolve_manifest({}) == (set(), None)
         assert capsys.readouterr().err == ""  # nothing recorded, nothing to say
 
         missing = tmp_path / "gone"
-        assert bom.known_session_ids({"manifest_path": str(missing)}) == set()
+        assert bom.resolve_manifest({"manifest_path": str(missing)}) == (set(), None)
         assert str(missing) in capsys.readouterr().err
 
         broken = tmp_path / "broken.json"
         broken.write_text("{not json", encoding="utf-8")
-        assert bom.known_session_ids({"manifest_path": str(broken)}) == set()
+        assert bom.resolve_manifest({"manifest_path": str(broken)}) == (set(), None)
         assert str(broken) in capsys.readouterr().err
 
         shapeless = tmp_path / "shapeless.json"
         shapeless.write_text('{"sessions": "not a list"}', encoding="utf-8")
-        assert bom.known_session_ids({"manifest_path": str(shapeless)}) == set()
+        assert bom.resolve_manifest({"manifest_path": str(shapeless)}) == (set(), None)
         assert "no 'sessions' list" in capsys.readouterr().err
 
     @pytest.mark.parametrize("recorded", [123, ["a"], {"p": 1}, None, ""])
@@ -2088,7 +2088,7 @@ class TestStrandedResults:
         """
         state = {"batch_id": "batch_001", "manifest_path": recorded}
         assert bom.state_manifest_path(state) is None
-        assert bom.known_session_ids(state) == set()
+        assert bom.resolve_manifest(state) == (set(), None)
         command = bom.rebuild_map_command(
             "batch_001", Path("/tmp/out/haiku"), bom.state_manifest_path(state)
         )
@@ -2132,6 +2132,100 @@ class TestStrandedResults:
         assert str(typo) in printed
         assert str(good) in printed
         assert "falling back" in printed
+
+    @pytest.mark.parametrize(
+        "useless",
+        ['{"sessions": []}', '{"sessions": [{"nope": 1}]}'],
+    )
+    def test_a_sessionless_supplied_manifest_falls_back(
+        self, tmp_path, capsys, useless
+    ):
+        """Readable but naming nothing is as useless as unreadable.
+
+        This short-circuited on ``found is not None``, so a manifest that
+        parsed and listed no session defeated a good recorded one in
+        silence -- and the remedy line then named the very file the rebuild
+        path refuses with "lists no sessions".
+        """
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "recorded.jsonl", n_records=6
+        )
+        good = fx.write_manifest(
+            tmp_path / "recorded.json",
+            [fx.manifest_row("recorded-session", transcript)],
+        )
+        empty = tmp_path / "empty.json"
+        empty.write_text(useless, encoding="utf-8")
+
+        found, used = bom.resolve_manifest({"manifest_path": str(good)}, empty)
+        assert found == {"recorded-session"}
+        assert used == str(good)
+        printed = capsys.readouterr().err
+        assert "lists no sessions" in printed
+        assert str(empty) in printed
+        assert str(good) in printed
+
+    def test_a_sessionless_manifest_alone_uses_the_placeholder(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """With nothing else to fall back to, do not name the useless file."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        empty = tmp_path / "empty.json"
+        empty.write_text('{"sessions": []}', encoding="utf-8")
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({"batch_id": "batch_002", "custom_id_to_session": {}}),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id("orphan"), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(empty),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert bom.MANIFEST_PLACEHOLDER in printed
+        assert str(empty) not in printed
+
+    def test_a_sessionless_manifest_does_not_defeat_recovery_end_to_end(
+        self, tmp_path, capsys, anthropic_stub
+    ):
+        """The finding, at the entry point that would have shown it."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        session_id = "subagent-explore-" + "v" * 80
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "good.jsonl", n_records=6
+        )
+        good = fx.write_manifest(
+            tmp_path / "good.json", [fx.manifest_row(session_id, transcript)]
+        )
+        empty = tmp_path / "empty.json"
+        empty.write_text('{"sessions": []}', encoding="utf-8")
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_002",
+                "manifest_path": str(good),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+        anthropic_stub.append(
+            self._succeeded(bom.build_custom_id(session_id), fx.RESPONSE_BARE)
+        )
+        assert bom.main([
+            "--provider", "haiku",
+            "--haiku-apply", "batch_001",
+            "--out-dir", str(out_dir.parent),
+            "--manifest", str(empty),
+        ]) == 0
+        printed = capsys.readouterr().out
+        assert f"probably session {session_id}" in printed
+        assert "not recoverable" not in printed
+        assert str(empty) not in printed
 
     def test_a_readable_supplied_manifest_still_wins(self, tmp_path, capsys):
         """The fallback must not undo the point of supplying one."""
