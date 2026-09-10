@@ -1009,8 +1009,19 @@ Open, each with its verdict so far:
   test moved to the front of `say_data_remedy`; `assert_composed`
   requires each marker exactly once; the trim-set extraction parses
   whole argument lists and refuses non-integer literals. Coordinator
-  suite 4502 passed, 19 deselected, exit 0; pushed; second re-audit of
-  PR #149 running.
+  suite 4502 passed, 19 deselected, exit 0; pushed. Second re-audit
+  verdict "merge after M-1": all six matrix rows hold through the real
+  script and every claimed kill re-verified, but the new
+  `assert_no_destructive_advice()` duplicates the fragment from the
+  script and no positive control requires the word "entirely", so a
+  benign rewording disarms it (124 passed with a re-injected regression);
+  and `submodule_state` is never re-read after a successful init, so a
+  just-cloned submodule lacking `local.md` still gets the destructive
+  sentence (bounded: `data/` was empty). Round 4d-8 (closing): derive the
+  fragment from the script source, gate the destructive branch on
+  `WOULD_INIT -eq 0`, pin step 1's remedy; then merge on a green suite
+  with the one-line test fix verified by mutation rather than a third
+  re-audit.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
