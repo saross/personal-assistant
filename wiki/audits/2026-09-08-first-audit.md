@@ -1610,7 +1610,10 @@ PATH).
 DONE 2026-09-10** (Shawn's choice: re-baseline): the table now holds the
 clean corpus's schema-2 values with the bands unchanged; phase 1 exits 0
 with all thirteen anchors within tolerance. The table edit itself was
-not put through a fresh-context audit.
+not put through a fresh-context audit. Background: the anchors were
+run 1's (2026-05, raw corpus, 139,105 words); the clean corpus (127,718
+words) had failed 12 of 13 since 2026-05-24, so every clean run exited 1
+although its results were written and stamped.
 
 **D6 — filed 2026-09-10.** Shawn deleted the remote branch and filed a
 GitHub Support request (via Repository features → Branches) naming
@@ -1618,14 +1621,6 @@ GitHub Support request (via Repository features → Branches) naming
 rows (4baee34, 093f0bc, 4d5d94c, 5bdcdfd, 6b14323); the squash commit on
 main is clean. Awaiting the ticket's reply; verify by a 404 on a commit
 URL. Other clones may still hold the branch (zbook to check).
-`phase1_pipeline.py` compares thirteen "regression vs run 1" anchors
-against the 2026-05 raw-corpus run (139,105 words) with `exact` or ±2 %
-tolerances; the clean corpus (127,718 words, references separated) has
-failed 12 of 13 since 2026-05-24, so every clean run exits 1 although its
-results are written and stamped. Either re-baseline the anchors to the
-clean corpus (a one-off table edit in `phase1_pipeline.py`, plan §2.5) so
-exit 1 means something again, or drop the anchors for the clean path.
-Recommendation: re-baseline to today's values and keep the ±2 % bands.
 
 1. **H1 — extraction drops everything before the last 30 messages.** Fix is to
    process the window in chunks of 30, which multiplies Haiku calls on the 5% of
