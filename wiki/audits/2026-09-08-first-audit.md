@@ -746,7 +746,7 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-two PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-three PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
@@ -757,8 +757,8 @@ tolerant guard, midnight flake, hermeticity follow-ups); #143
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
 #136, #141
-(archive follow-ups); #128, #144 (style-analyser scripts, three re-audits then
-one);
+(archive follow-ups); #128, #144, #151 (style-analyser scripts, three re-audits,
+then one, then two);
 #142, #146, #150, #154 (bake-off rounds 4e-5 to 4e-8).
 
 Open, each with its verdict so far:
@@ -856,7 +856,20 @@ Open, each with its verdict so far:
   agent document's example completed with a doc-to-code test; the
   newer-than-code stamp wording corrected. Coordinator suite 4492
   passed, 19 deselected, exit 0 (the numpy skips gone now the stack is
-  installed); pushed; second re-audit of PR #151 running.
+  installed); pushed. Second re-audit verdict merge — C1 closed at
+  runtime (phase 3 unstamped → exit 2 before any spaCy load; a
+  comprehension is no longer possible; the re-read-by-comprehension
+  mutation fails both new tests); the six consumers now accept the live
+  stamped files. **Merged 2026-09-10.** DEFERRED follow-ups: the
+  derivation check is a shape check (a hard-coded base passed to the
+  helper passes; correct indirection through a constant fails); the
+  "no re-read" guarantee rests on the `payloads` unpack plus a substring
+  scan for `load_json` (a re-read spelled `json.loads(...read_text())`
+  added after the unpack survives, in both scripts); the doc-example
+  regex crosses fence boundaries (an earlier bash block in the document
+  would break the test); the example's path values unchecked; the
+  argument order into `load_corpus_space` unpinned (fail-loud at
+  runtime); nested `add_argument` calls not recovered.
 - **#134** (bake-off follow-ups, rounds 4e-3/4e-4): **merged** 2026-09-09 08:3x;
   five lows recorded in the tranche 6 section.
 - **#136** (archive follow-ups, round 4c-3): **merged** 2026-09-09 08:2x; its
