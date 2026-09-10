@@ -937,8 +937,23 @@ Open, each with its verdict so far:
   HOME 4351 passed (a first attempt failed with 338 `test_zotero` errors
   under concurrent suite load and passed on re-run — the round 4a-3
   transient). Merged with main (72177ca), coordinator suite 4504 passed,
-  2 skipped, 19 deselected, exit 0; **PR #155, open, re-audit DEFERRED**
-  (stop point).
+  2 skipped, 19 deselected, exit 0; **PR #155**. Re-audit (2026-09-10)
+  verdict **do not merge** — C1: the hook compares the RAW path the
+  `open` event carries against a set of RESOLVED paths, and the
+  canonical files are the symlink paths `memories/...` that every
+  production module uses, so an append through the symlink is silent
+  under STRICT (reproduced; the `resolve()` mutation survives all 172
+  tests because the nested store has no symlink). M2: the recorded root
+  cause of the first prototype's failure (a `PosixPath` reaching the
+  event) is false on Python 3.13 — the event always carries `str`. M1:
+  the `store_writes` advisory still says "Set PA_HERMETICITY_STRICT=1"
+  when it is set. The cost is +1.6 % (+0.45 µs per `open`), not
+  "none". Everything else (leak net in `pytest_sessionfinish`, the
+  structural tail, labels, wording, the never-raises guard, no arming
+  without a store) verified. Round 4a-8 (closing): realpath before the
+  set test with a basename pre-filter, a symlinked-store nested case,
+  the false narrative corrected, the advisory branched, the cost stated;
+  then a narrow re-audit of that hunk.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -1248,8 +1263,18 @@ Open, each with its verdict so far:
   copy, its failure is exit 2 ("the archive copy SUCCEEDED, only the
   derived index is stale"), an absent catalogue is skipped, and the dry
   run previews both. Merged with main (032d48d), coordinator suite 4541
-  passed, 19 deselected, exit 0; pushed; third re-audit of PR #147
-  running.
+  passed, 19 deselected, exit 0; pushed. Third re-audit verdict merge:
+  no pipe anywhere in the classifier, the scale table reproduced (3 at
+  every size, 2 with no refusal; a bash here-string above the pipe
+  buffer is a temp file, so nothing can be SIGPIPEd), the lint real and
+  the repository clean, every attestation checked against the deployed
+  log, the copyto argv right and a copyto failure unable to reach exit 3.
+  One test-integrity medium: the copy-before-copyto ordering guard is
+  hollow (the `_rclone_writing` stub never records argv), taken in a
+  closing round 4c-8 with two dead-comment/dead-assignment lows; deferred
+  lows: no fixture exceeds ten manifest entries; the lint skips
+  `setup.sh`; the `| head -1` SIGPIPE class is unlinted. Merge on a green
+  suite after the one-line fix.
 - Round **4e-5** delivered (five commits 7a67844-bb5143a on
   `claude/audit-round4e-5`): the recovery line shell-quoted; both argument
   fences covered one-of-two; `n_requests` pinned apart from the map; the
@@ -1347,8 +1372,8 @@ Open, each with its verdict so far:
   diagnostic reported once by parameter (a state-dict marker was
   rejected as a leak); `assemble_requests` validates first;
   `known_session_ids` removed; the help slice scoped within the options
-  section. Merged with main (a163fcb); coordinator suite, PR, and
-  re-audit pending.
+  section. Merged with main (a163fcb), coordinator suite 4550 passed,
+  19 deselected, exit 0; **PR #156**; re-audit running.
 
 Resumed 2026-09-09 ~08:00 after the spend-limit interruption; if it
 recurs, everything needed to resume is in `2026-09-08-first-audit-artefacts/`
