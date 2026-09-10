@@ -2431,8 +2431,15 @@ loose ends tied up so work can return to the GPT integration.
   diagnostic-blocked result. Astra addressed all three within the hour
   (0b2ebb2); a narrow final check re-applied the mutations (each killed
   twice or thrice) and approved; Astra may land it under the standing
-  routine-change instruction. The host comparison remains Shawn's to
-  run in the morning.
+  routine-change instruction, and did: **#7 merged 5a2e1b0**, handoff
+  ec11e75 (both verdicts anchored; the real prerequisites named; 136
+  versus 135+1 skip distinguished). Review loop complete on both
+  sides. **Shawn's morning command** is in gpt-hub
+  integration-records/2026-09-10-scoped-acceptance-diagnostic.md: it
+  checks the harness, tests, launcher, renderer, admission validator,
+  and mail hook against the approved head, then runs the host
+  comparison (18 local protocol requests, 6 sessions, zero model
+  calls); the production-renderer decision follows the report.
 - **Deferred** (Shawn's call, reviewed together): all remaining
   follow-ups are test-strength or wording; the one with stakes is D6
   (delete the `claude/audit-hook-tests` remote branch and ask GitHub
