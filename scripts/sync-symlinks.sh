@@ -275,10 +275,20 @@ say_data_remedy() {
         say "  Remedy: no data submodule is declared in this checkout, so"
         say "    $COMPOSER_LOCAL cannot appear. Check .gitmodules."
     elif [ "${submodule_state#-}" != "$submodule_state" ] &&
-         [ "$SUBMODULE_STATUS_OK" -eq 1 ]; then
-        # The conjunct is redundant given the first branch, and kept:
-        # this is the one branch that tells someone to delete their data,
-        # and it should not become reachable by a later reordering.
+         [ "$SUBMODULE_STATUS_OK" -eq 1 ] &&
+         [ "$WOULD_INIT" -eq 0 ]; then
+        # Two conjuncts guard the one branch that tells someone to delete
+        # their data. The first is redundant given the failed-query test
+        # above, and kept so a later reordering cannot quietly unlock it.
+        #
+        # The second is round 4d-8 (M-2): $submodule_state is captured
+        # ONCE, before step 1 runs, and never re-read. After a successful
+        # init it is stale — it still says "-" — so a submodule git had
+        # just cloned into would be met with "remove $PA_DIR/data
+        # entirely", about a directory that now holds a fresh checkout.
+        # That is reachable whenever the recorded pa-data commit does not
+        # carry global-claude-md/local.md. $WOULD_INIT is the fact the
+        # stale string cannot express.
         say "  Remedy: $DATA_REMEDY"
     else
         say "  Remedy: data/ IS initialised, so this is a missing file"

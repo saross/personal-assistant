@@ -27,6 +27,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -330,19 +331,44 @@ def assert_composed(claude_md: Path, local_marker: str) -> None:
     assert positions == sorted(positions), (markers, positions)
 
 
-#: The sentence the destructive remedy is made of, without the "Remedy: "
-#: prefix. Round 4d-7 (M1): asserting the PREFIXED form let the step-1
-#: site, which emitted the same sentence inline, print it unnoticed.
-DESTRUCTIVE_ADVICE = "entirely (git will not clone into a"
+def destructive_advice() -> str:
+    """
+    The destructive remedy's own words, READ FROM THE SCRIPT.
+
+    Round 4d-8 (M-1): this used to be a hard-coded fragment,
+    ``"entirely (git will not clone into a"``, duplicated by hand from
+    ``DATA_REMEDY``. Nothing required the script to keep saying it, so
+    rewording the remedy to drop "entirely" -- keeping "Remedy: remove"
+    and the parenthetical -- left every "must not say this" assertion
+    vacuously true, and a re-injected regression passed 124 tests.
+
+    Deriving it means a reworded remedy is still caught, and the positive
+    control below means a remedy that stops being printed is caught too.
+
+    Returns:
+        The part of DATA_REMEDY after the interpolated ``$PA_DIR/data``,
+        exactly as the script will emit it.
+    """
+    source = (SCRIPTS / "sync-symlinks.sh").read_text(encoding="utf-8")
+    match = re.search(r'DATA_REMEDY="((?:[^"\\]|\\.)*)"', source, re.DOTALL)
+    assert match, "no DATA_REMEDY assignment in sync-symlinks.sh"
+    # A backslash-newline inside a double-quoted shell string is removed
+    # entirely, so the emitted value is the two halves run together.
+    literal = match.group(1).replace("\\\n", "")
+    parts = literal.split("/data ", 1)
+    assert len(parts) == 2, f"DATA_REMEDY no longer names $PA_DIR/data: {literal}"
+    advice = parts[1].strip()
+    assert len(advice) > 20, f"suspiciously short advice fragment: {advice!r}"
+    return advice
 
 
 def assert_no_destructive_advice(
     result: subprocess.CompletedProcess[str],
 ) -> None:
-    """Fail if "remove <PA_DIR>/data entirely" appears on either stream."""
+    """Fail if the "remove <PA_DIR>/data …" advice appears on either stream."""
     combined = result.stdout + result.stderr
-    assert DESTRUCTIVE_ADVICE not in combined, combined
-    assert "entirely" not in combined, combined
+    assert destructive_advice() not in combined, combined
+    assert "Remedy: remove" not in combined, combined
 
 
 def _make_worktree(pa_dir: Path) -> None:
@@ -969,6 +995,11 @@ class TestUnusableDataStopsBeforeAnythingIsRelinked:
             if "$DATA_REMEDY" in line and line.lstrip().startswith("say ")
         ]
         assert len(emit_sites) == 1, emit_sites
+        # Round 4d-8 (M-1): the literal must be parseable, since every
+        # "must not say this" assertion is derived from it. A DATA_REMEDY
+        # that stopped matching would otherwise make them all vacuous.
+        assert 'DATA_REMEDY="' in source
+        assert destructive_advice()
         assert "say_data_remedy" in source
         # Only executable lines: the comment above that branch quotes the
         # withdrawn advice on purpose, so the reason stays on record.
@@ -1228,6 +1259,11 @@ class TestDryRunNeverFailsWhereARealRunSucceeds:
         assert "would run: git submodule update --init" in result.stdout
         assert "a REAL run would" not in result.stdout, result.stdout
         assert_no_destructive_advice(result)
+        # NO remedy of any kind (round 4d-8, M-1): nothing is wrong here,
+        # so there is nothing to remedy. Any say_data_remedy call reaching
+        # this branch also says something FALSE -- with WOULD_INIT set it
+        # reports "data/ IS initialised", when the init was only narrated.
+        assert "Remedy:" not in result.stdout, result.stdout
         assert "previewed rather than performed" in result.stdout
         assert "[8/8]" in result.stdout, result.stdout
         assert snapshot(sync_sandbox["home"]) == before
@@ -1343,8 +1379,71 @@ class TestTheRemedyNeverSaysDeleteALiveSubmodule:
         )
 
         assert result.returncode == 1, result.stdout
+        # The POSITIVE control (round 4d-8, M-1): the derived fragment must
+        # actually be printed. Without this, rewording DATA_REMEDY to drop
+        # a word made every "must not say this" assertion vacuously true.
+        advice = destructive_advice()
+        assert advice in result.stdout, (advice, result.stdout)
         assert "Remedy: remove" in result.stdout, result.stdout
-        assert "will not clone into a non-empty directory" in result.stdout
+        # L-1/L-4, decided in round 4d-8: TWICE, once from step 1 and once
+        # from the step-7 stop, and that is deliberate. Each site fires in
+        # a state the other does not reach — step 1's is the only one that
+        # speaks when data/ is a non-submodule that happens to contain
+        # local.md, and step 7's is the last thing in a cron log — and both
+        # read the same string from the same place, so they cannot drift.
+        assert result.stdout.count(advice) == 2, result.stdout
+
+    def test_a_just_initialised_submodule_is_never_told_to_delete_itself(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M-2 — $submodule_state is captured once and never re-read.
+
+        After a SUCCESSFUL init the recorded string still says "-", so a
+        submodule git had just cloned into was met with "remove …/data
+        entirely" the moment the recorded pa-data commit turned out not to
+        carry global-claude-md/local.md. The comment above say_data_remedy
+        promises the destructive branch is reachable only when "nothing of
+        the operator's can be inside it"; here git had just put a whole
+        checkout inside it.
+
+        The stub init populates data/memories/ but not local.md, which is
+        exactly that state.
+        """
+        log = sync_sandbox["log"]
+        stub = sync_sandbox["bin"] / "git"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "git" >> {shlex.quote(str(log))}\n'
+            f'for a in "$@"; do printf " %s" "$a" >> {shlex.quote(str(log))}; done\n'
+            f'printf "\\n" >> {shlex.quote(str(log))}\n'
+            'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
+            '    printf -- "-1234abcd data\\n"\n'
+            'elif [[ "${1:-}" == "submodule" && "${2:-}" == "update" ]]; then\n'
+            "    # A real clone, of a commit that lacks global-claude-md/.\n"
+            '    mkdir -p "$STUB_SUBMODULE_POPULATES/memories"\n'
+            '    printf "{}\\n" > "$STUB_SUBMODULE_POPULATES/memories/memories.jsonl"\n'
+            '    printf "gitdir: ../.git/modules/data\\n" \\\n'
+            '        > "$STUB_SUBMODULE_POPULATES/.git"\n'
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(sync_sandbox)
+
+        assert result.returncode == 1, result.stdout
+        assert "git submodule update --init" in sync_sandbox["log"].read_text(
+            encoding="utf-8"
+        )
+        assert_no_destructive_advice(result)
+        assert "IS initialised" in result.stdout, result.stdout
+        assert "Do NOT delete" in result.stdout
+        # And the checkout git just made is still there.
+        assert (data / "memories" / "memories.jsonl").is_file()
 
     def test_a_failed_status_query_never_unlocks_the_removal(
         self, sync_sandbox: dict[str, Path]
