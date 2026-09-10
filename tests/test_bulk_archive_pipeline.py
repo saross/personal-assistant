@@ -2300,11 +2300,48 @@ class TestMissingManifestSizeIsAnnounced:
             pipeline.archive()
 
         messages = " ".join(record.getMessage() for record in caplog.records)
-        assert "records no size" in messages, messages
+        assert "recorded no size" in messages, messages
         assert "re-run discover" in messages
         # It still archives: a missing size is a degraded guard, not a
         # refusal — the grace window and the during-copy check still apply.
         assert len(pipeline.entries()) == 1
+
+    def test_many_sizeless_entries_warn_once_with_a_count(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Round 4c-5 finding L4: a legacy manifest is sizeless throughout.
+
+        One line per session would bury the run's real output under hundreds
+        of identical warnings and still say exactly one thing. The repair --
+        re-run discover -- applies to the whole manifest at once.
+        """
+        for index in range(5):
+            pipeline.add_session(
+                f"{index}{SID_A[1:]}", records=substantive_records(SID_A)
+            )
+        manifest = pipeline.discover()
+        assert len(manifest) == 5
+        for entry in manifest:
+            del entry["size_bytes"]
+        pipeline.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        sizeless = [
+            record for record in caplog.records
+            if "recorded no size" in record.getMessage()
+        ]
+        assert len(sizeless) == 1, (
+            f"expected one summary line, got {len(sizeless)}"
+        )
+        message = sizeless[0].getMessage()
+        assert "5 manifest entries" in message, message
+        assert "and 2 more" in message, (
+            f"the summary should name the first three and count the rest: "
+            f"{message}"
+        )
+        assert len(pipeline.entries()) == 5
 
     def test_a_sized_manifest_entry_does_not_warn(
         self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
@@ -2354,3 +2391,140 @@ def _archive_parser_help() -> str:
         bulk_archive.setup_logging = original_logging
         sys.argv = argv
     return buffer.getvalue()
+
+
+class TestSizelessManifestEdges:
+    """Round 4c-6 findings L-b, L-c, L-e — the sizeless-manifest path."""
+
+    def _sizeless_manifest(self, pipeline: Pipeline, count: int) -> None:
+        """Discover *count* sessions, then strip every recorded size."""
+        for index in range(count):
+            pipeline.add_session(
+                f"{index}{SID_A[1:]}", records=substantive_records(SID_A)
+            )
+        manifest = pipeline.discover()
+        assert len(manifest) == count
+        for entry in manifest:
+            del entry["size_bytes"]
+        pipeline.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_dry_run_survives_a_sizeless_manifest(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-e: the preview died on the very manifest it should describe.
+
+        `entry["size_bytes"]` was read unguarded in the listing, so
+        `archive --dry-run` raised KeyError before the summary explaining
+        the missing sizes could ever be printed.
+        """
+        self._sizeless_manifest(pipeline, 2)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive(dry_run=True)
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "size not recorded" in messages, messages
+        assert pipeline.entries() == [], "a dry run wrote to the archive"
+        # The remedy has to reach the PREVIEW. The dry run returns before
+        # the completeness guard, so the summary that normally carries it
+        # is unreachable here (round 4c-7, low).
+        assert "re-run discover" in messages, (
+            "the dry run described the problem but not the fix"
+        )
+        assert "2 of 2 manifest entries record no size" in messages, messages
+
+    def test_dry_run_survives_a_manifest_with_no_turn_count(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``turns`` is absent from the same legacy manifests as ``size``.
+
+        The fallback was written but never exercised, so nothing said
+        whether the listing survives it (round 4c-7, low).
+        """
+        pipeline.add_session(SID_A)
+        manifest = pipeline.discover()
+        del manifest[0]["turns"]
+        del manifest[0]["size_bytes"]
+        pipeline.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive(dry_run=True)
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "? turns" in messages, messages
+        assert pipeline.entries() == []
+
+    def test_a_fully_sized_manifest_previews_without_the_warning(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control: an ordinary preview stays quiet about sizes."""
+        pipeline.add_session(SID_A)
+        pipeline.discover()
+
+        with caplog.at_level(logging.INFO, logger=LOGGER.name):
+            pipeline.archive(dry_run=True)
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "record no size" not in messages
+        assert "MB" in messages
+
+    def test_the_shown_ids_and_the_remainder_agree(
+        self, pipeline: Pipeline, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """L-b: widening the slice must change the remainder with it.
+
+        `[:3]` to `[:4]` showed four ids and still said "and 2 more" -- the
+        message contradicted itself and no test noticed.
+        """
+        self._sizeless_manifest(pipeline, 6)
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            pipeline.archive()
+
+        summary = next(
+            record.getMessage() for record in caplog.records
+            if "recorded no size" in record.getMessage()
+        )
+        listed = summary.split(": ")[-1].split(" — ")[0]
+        shown = [
+            part.strip() for part in listed.split(" and ")[0].split(",")
+        ]
+        remainder = int(listed.split(" and ")[1].split()[0])
+
+        assert len(shown) == bulk_archive.SIZELESS_IDS_SHOWN, summary
+        assert len(shown) + remainder == 6, (
+            f"the ids shown and the remainder do not add up to the total: "
+            f"{summary}"
+        )
+
+    def test_the_collector_is_a_required_argument(self) -> None:
+        """L-c: an omitted collector silenced the condition entirely.
+
+        It defaulted to None and was replaced with a throwaway list, so a
+        caller that forgot it lost the report with no sign at all.
+        """
+        import inspect
+
+        parameter = inspect.signature(
+            bulk_archive.refuse_incomplete_source
+        ).parameters["sizeless_sessions"]
+
+        assert parameter.default is inspect.Parameter.empty, (
+            "sizeless_sessions is optional again; a call site that omits it "
+            "silently disables the missing-size report"
+        )
+
+    def test_the_collector_receives_the_session(self, tmp_path: Path) -> None:
+        """The positive control, through the function itself."""
+        source = write_transcript(
+            tmp_path / "s.jsonl", substantive_records(SID_A)
+        )
+        age_file(source, hours=96)
+        collected: list[str] = []
+
+        refusal = bulk_archive.refuse_incomplete_source(
+            source, None, LOGGER, collected
+        )
+
+        assert refusal is None
+        assert collected == [source.name]
