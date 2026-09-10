@@ -262,17 +262,24 @@ say_data_remedy() {
     # composer a git dependency it does not otherwise have, which is a
     # worse trade than the divergence, and the composer's answer is the
     # conservative one: it says "do not delete" whenever data/.git exists.
-    if [ -z "$submodule_state" ]; then
-        say "  Remedy: no data submodule is declared in this checkout, so"
-        say "    $COMPOSER_LOCAL cannot appear. Check .gitmodules."
-    elif [ "${submodule_state#-}" != "$submodule_state" ] &&
-         [ "$SUBMODULE_STATUS_OK" -eq 1 ]; then
-        say "  Remedy: $DATA_REMEDY"
-    elif [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
+    # Round 4d-7 (L-i): the failed-query test comes FIRST. It used to sit
+    # third, behind `-z "$submodule_state"`, so a git that exited 128
+    # printing nothing was reported as "no data submodule is declared" —
+    # a confident answer drawn from a question that was never answered.
+    if [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
         say "  Remedy: git could not report on the data submodule, so its"
         say "    state is unknown. Run 'git -C $PA_DIR submodule status'"
         say "    and resolve what it reports before re-running. Do NOT"
         say "    delete $PA_DIR/data on the strength of a failed query."
+    elif [ -z "$submodule_state" ]; then
+        say "  Remedy: no data submodule is declared in this checkout, so"
+        say "    $COMPOSER_LOCAL cannot appear. Check .gitmodules."
+    elif [ "${submodule_state#-}" != "$submodule_state" ] &&
+         [ "$SUBMODULE_STATUS_OK" -eq 1 ]; then
+        # The conjunct is redundant given the first branch, and kept:
+        # this is the one branch that tells someone to delete their data,
+        # and it should not become reachable by a later reordering.
+        say "  Remedy: $DATA_REMEDY"
     else
         say "  Remedy: data/ IS initialised, so this is a missing file"
         say "    inside the submodule, not a missing submodule. Look there:"
@@ -292,6 +299,10 @@ SKIP_COMPOSE=0
 #: the safe default — it never selects the destructive remedy.
 submodule_state=""
 SUBMODULE_STATUS_OK=1
+#: Set when step 1 initialises (or, under --dry-run, would initialise) the
+#: submodule. The pre-check below needs it to tell "this checkout is
+#: broken" from "the init that fixes it was only narrated".
+WOULD_INIT=0
 # Audit round 4d (E10): run this ONLY when data/ is uninitialised. On an
 # already-initialised submodule `git submodule update` checks out the
 # gitlink SHA recorded in the superproject, which detaches data/ from its
@@ -358,7 +369,18 @@ fi
 # remedy. The remedy requires both: git said "-", AND git succeeded.
 submodule_state="$(git submodule status -- data 2>/dev/null)" \
     && SUBMODULE_STATUS_OK=1 || SUBMODULE_STATUS_OK=0
-if [ -z "$submodule_state" ]; then
+# Round 4d-7 (M1): a FAILED query is not a report of an uninitialised
+# submodule. `$( … )` keeps whatever was printed before the failure, so a
+# git that emitted a "-" line and then exited non-zero used to land in the
+# "uninitialised but not empty" branch below and print "remove
+# $PA_DIR/data entirely" — the destructive advice, from a question that
+# was never answered. Every branch that follows now presumes the query
+# succeeded.
+if [ "$SUBMODULE_STATUS_OK" -eq 0 ]; then
+    say "  WARNING: 'git submodule status' failed, so the state of data/"
+    say "    is unknown and this step will do nothing."
+    say_data_remedy
+elif [ -z "$submodule_state" ]; then
     say_verbose "  No data submodule declared — nothing to initialise."
 elif [ "${submodule_state#-}" = "$submodule_state" ]; then
     say_verbose "  Submodule already initialised — leaving it alone."
@@ -380,9 +402,20 @@ elif [ -n "$(ls -A "$PA_DIR/data" 2>/dev/null || true)" ]; then
     # directory, by hand or otherwise (verified against git 2.48.1 on a
     # throwaway superproject). Emptying data/ is the only thing that
     # helps, so it is the only thing offered.
+    # Round 4d-7 (M1): the advice is PRINTED FROM ONE PLACE. This branch
+    # used to interpolate $DATA_REMEDY inline, so the guard added in round
+    # 4d-6 protected the step-7 site and not this one, and the two could
+    # (and did) disagree within a single run.
     say "  WARNING: data/ is uninitialised but not empty, so git cannot"
-    say "    clone into it. $DATA_REMEDY"
+    say "    clone into it."
+    say_data_remedy
 else
+    # Round 4d-7 (M2): record that this run initialises the submodule.
+    # Under --dry-run the init is narrated rather than performed, so
+    # data/ stays empty and the pre-check below would otherwise conclude
+    # the checkout is broken — and tell the operator to delete the very
+    # directory the preview had just said it would populate.
+    WOULD_INIT=1
     run_action git submodule update --init --recursive --quiet
     did_verbose "have the submodule ready" "Submodule ready."
 fi
@@ -407,6 +440,18 @@ if [ ! -f "$COMPOSER_LOCAL" ]; then
         say "  NOTE: $COMPOSER_LOCAL is absent (data/ belongs to the main"
         say "    checkout), so step 7 will be SKIPPED and"
         say "    $CLAUDE_DIR/CLAUDE.md left as it is."
+        SKIP_COMPOSE=1
+    elif [ $DRY_RUN -eq 1 ] && [ $WOULD_INIT -eq 1 ]; then
+        # Round 4d-7 (M2): a FRESH CLONE preview. Step 1 has just
+        # narrated the init that produces this file, and a real run in
+        # this state exits 0 and composes normally. Saying "a REAL run
+        # would refuse" here is false, and offering to delete data/ is
+        # worse than false. Step 7 is skipped only because the init was
+        # narrated rather than performed.
+        say "  NOTE: $COMPOSER_LOCAL is absent only because the step-1"
+        say "    init was previewed rather than performed. A real run"
+        say "    initialises data/ and composes normally; this preview"
+        say "    skips step 7."
         SKIP_COMPOSE=1
     elif [ $DRY_RUN -eq 1 ]; then
         # L-c, decided in round 4d-5: a preview changes nothing, so it

@@ -323,6 +323,21 @@ def assert_composed(claude_md: Path, local_marker: str) -> None:
     assert positions == sorted(positions), (markers, positions)
 
 
+#: The sentence the destructive remedy is made of, without the "Remedy: "
+#: prefix. Round 4d-7 (M1): asserting the PREFIXED form let the step-1
+#: site, which emitted the same sentence inline, print it unnoticed.
+DESTRUCTIVE_ADVICE = "entirely (git will not clone into a"
+
+
+def assert_no_destructive_advice(
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """Fail if "remove <PA_DIR>/data entirely" appears on either stream."""
+    combined = result.stdout + result.stderr
+    assert DESTRUCTIVE_ADVICE not in combined, combined
+    assert "entirely" not in combined, combined
+
+
 def _make_worktree(pa_dir: Path) -> None:
     """Turn an ordinary-clone sandbox into a LINKED WORKTREE.
 
@@ -938,7 +953,16 @@ class TestUnusableDataStopsBeforeAnythingIsRelinked:
         """One remedy string, so step 1 and the summary cannot diverge."""
         source = (SCRIPTS / "sync-symlinks.sh").read_text(encoding="utf-8")
         assert "DATA_REMEDY=" in source
-        assert 'clone into it. $DATA_REMEDY' in source
+        # Round 4d-7 (M1): the advice is EMITTED from exactly one place.
+        # It used to be interpolated inline at step 1 as well, so the
+        # guard added in round 4d-6 covered the step-7 site only and the
+        # two could disagree inside a single run.
+        emit_sites = [
+            line for line in source.splitlines()
+            if "$DATA_REMEDY" in line and line.lstrip().startswith("say ")
+        ]
+        assert len(emit_sites) == 1, emit_sites
+        assert "say_data_remedy" in source
         # Only executable lines: the comment above that branch quotes the
         # withdrawn advice on purpose, so the reason stays on record.
         code = [
@@ -1154,10 +1178,16 @@ class TestDryRunNeverFailsWhereARealRunSucceeds:
     def test_the_broken_clone_note_is_not_the_worktree_note(
         self, sync_sandbox: dict[str, Path]
     ) -> None:
-        """The other direction of the same swap."""
+        """The other direction of the same swap.
+
+        Round 4d-7 (M2): data/ must be NON-empty here. An empty one is a
+        fresh clone whose init step 1 would perform, which is a different
+        state with a different note — that confusion was the M2 defect.
+        """
         data = sync_sandbox["pa_dir"] / "data"
         (data / "global-claude-md" / "local.md").unlink()
         (data / "global-claude-md").rmdir()
+        (data / "stray.md").write_text("x\n", encoding="utf-8")
 
         result = _run_sync(
             sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
@@ -1166,6 +1196,49 @@ class TestDryRunNeverFailsWhereARealRunSucceeds:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "a REAL run would" in result.stdout, result.stdout
         assert "belongs to the main" not in result.stdout, result.stdout
+
+    def test_a_fresh_clone_preview_offers_no_remedy(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M2 — the preview contradicted the step it had just narrated.
+
+        Empty data/, status "-": step 1 previews `git submodule update
+        --init`, which is what produces local.md, and a real run in this
+        state exits 0 and composes. The preview nonetheless said "a REAL
+        run would refuse at step 1" and offered to delete data/ — the
+        very directory it had just said it would populate.
+        """
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+        before = snapshot(sync_sandbox["home"])
+
+        result = _run_sync(
+            sync_sandbox, "--dry-run", submodule_status="-1234abcd data"
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "would run: git submodule update --init" in result.stdout
+        assert "a REAL run would" not in result.stdout, result.stdout
+        assert_no_destructive_advice(result)
+        assert "previewed rather than performed" in result.stdout
+        assert "[8/8]" in result.stdout, result.stdout
+        assert snapshot(sync_sandbox["home"]) == before
+
+    def test_the_real_run_of_that_state_does_succeed(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """The claim the preview must not contradict, asserted directly."""
+        data = sync_sandbox["pa_dir"] / "data"
+        for child in sorted(data.rglob("*"), reverse=True):
+            child.unlink() if child.is_file() else child.rmdir()
+
+        result = _run_sync(sync_sandbox, submodule_status="-1234abcd data")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert_composed(
+            sync_sandbox["home"] / ".claude" / "CLAUDE.md", "MARKER-LOCAL"
+        )
 
     def test_a_healthy_dry_run_actually_consults_the_composer(
         self, sync_sandbox: dict[str, Path]
@@ -1300,6 +1373,78 @@ class TestTheRemedyNeverSaysDeleteALiveSubmodule:
         assert "Remedy: remove" not in result.stdout, result.stdout
         assert "Do NOT" in result.stdout
         assert (data / "memories").is_dir()
+
+    def test_a_failed_query_never_prints_the_advice_from_either_site(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """M1 — the advice was emitted from TWO places, one unguarded.
+
+        Round 4d-6 guarded the step-7 site. Step 1 interpolated the same
+        sentence inline, gated on the "-" prefix alone, so a git that
+        printed "-…" and then failed produced BOTH "remove …/data
+        entirely" (step 1) and "state is unknown … Do NOT delete"
+        (step 7) in one run — contradicting itself, destructively.
+        """
+        stub = sync_sandbox["bin"] / "git"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
+            '    printf -- "-abc data (heads/main)\\n"\n'
+            "    exit 1\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+        (data / "memories").mkdir()
+        (data / "memories" / "memories.jsonl").write_text(
+            '{"id": "synthetic"}\n', encoding="utf-8"
+        )
+
+        result = _run_sync(sync_sandbox)
+
+        assert_no_destructive_advice(result)
+        assert "state is unknown" in result.stdout, result.stdout
+        # Step 1 must not assert a state it has no evidence for: with the
+        # query failed, "data/ is uninitialised but not empty" is a claim
+        # about a submodule git declined to describe.
+        assert "'git submodule status' failed" in result.stdout, result.stdout
+        assert "uninitialised but not empty" not in result.stdout, (
+            result.stdout
+        )
+        assert (data / "memories" / "memories.jsonl").is_file()
+
+    def test_a_failed_query_with_no_output_is_unknown_not_undeclared(
+        self, sync_sandbox: dict[str, Path]
+    ) -> None:
+        """L-i — the emptiness test used to be asked first.
+
+        A git exiting 128 having printed nothing was reported as "no data
+        submodule is declared": a confident answer drawn from a question
+        that was never answered.
+        """
+        stub = sync_sandbox["bin"] / "git"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == "submodule" && "${2:-}" == "status" ]]; then\n'
+            "    exit 128\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        data = sync_sandbox["pa_dir"] / "data"
+        (data / "global-claude-md" / "local.md").unlink()
+        (data / "global-claude-md").rmdir()
+
+        result = _run_sync(sync_sandbox)
+
+        assert "state is unknown" in result.stdout, result.stdout
+        assert "no data submodule is declared" not in result.stdout
+        assert_no_destructive_advice(result)
 
     def test_no_declared_submodule_gets_its_own_remedy(
         self, sync_sandbox: dict[str, Path]
