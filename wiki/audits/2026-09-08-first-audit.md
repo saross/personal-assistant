@@ -746,11 +746,11 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-four PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-five PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
-and glue); #138 (machine glue, two re-audits); #126, #131, #134
+and glue); #138, #149 (machine glue, two re-audits each); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
 (hermeticity round 4a-6); #129, #140, #145, #152
@@ -1036,7 +1036,25 @@ Open, each with its verdict so far:
   fragment from the script source, gate the destructive branch on
   `WOULD_INIT -eq 0`, pin step 1's remedy; then merge on a green suite
   with the one-line test fix verified by mutation rather than a third
-  re-audit.
+  re-audit. Round 4d-8 delivered (cee582c): the fragment parsed from the
+  `DATA_REMEDY=` literal, the destructive branch gated on `WOULD_INIT
+  -eq 0` (a just-initialised submodule lacking `local.md` is told to look
+  inside it, never to delete it), step 1's remedy pinned, printed twice
+  by design and pinned at two; the coordinator verified by mutation that
+  a reworded remedy plus a re-injected regression fails the fresh-clone
+  preview test. **Merged 2a80630** 2026-09-10. Process slip recorded: the
+  merge command gated on GitHub mergeability, not on the coordinator
+  suite line, and that pre-merge run (554 s under load) showed one
+  failure; a captured full run on main afterwards named it —
+  `tests/test_analyse_wiki_vocabulary.py::TestWritesNothing::
+  test_repository_tree_and_home_are_untouched`, a whole-checkout
+  snapshot that includes the live `data/` submodule, so the extraction
+  hook's five-minute appends (reported by the hermeticity summary in the
+  same run) fail it whenever they overlap the run; it passes alone and in
+  every clean copy. Not caused by #149. DEFERRED: exclude the canonical
+  store paths (or tolerate the hermeticity guard's verified live appends)
+  in that snapshot; and the coordinator's merge step now checks the
+  suite line first.
 - Round **3c-7** delivered (four commits 102fb0e-a35f7e6 on
   `claude/audit-round3c-7`): an unmeasurable merge is dismissed only by a
   trailered commit whose own transition spans the whole observed drop, and
