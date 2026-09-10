@@ -953,7 +953,21 @@ Open, each with its verdict so far:
   without a store) verified. Round 4a-8 (closing): realpath before the
   set test with a basename pre-filter, a symlinked-store nested case,
   the false narrative corrected, the advisory branched, the cost stated;
-  then a narrow re-audit of that hunk.
+  then a narrow re-audit of that hunk. Round 4a-8 delivered (398290a):
+  a basename pre-filter then `os.path.realpath` (follows the symlink,
+  anchors a relative path against the cwd at event time); a nested store
+  laid out as the repository is (`memories -> data/memories`) with the
+  append made through the symlink, a relative open after `chdir`, a
+  silent read, and a test that `realpath` is not called for a
+  non-matching name; the false PosixPath narrative replaced by the true
+  cause (C1 itself) in both places; the advisory branched under STRICT;
+  the cost stated as +2.5 s per run and about 0.5 µs per open; a red
+  "EXIT STATUS 1" line before pytest's green summary on a queue leak
+  (the summary line itself cannot be changed without private reporter
+  API). Its clean-copy run with the store reached through the symlink:
+  4567 passed, exit 0, no banner, store byte-identical; the
+  out-of-process append via the symlink reported with the hook silent.
+  Coordinator suite, push, and a narrow re-audit of the hunk pending.
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
