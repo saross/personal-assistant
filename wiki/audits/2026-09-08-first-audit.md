@@ -746,14 +746,15 @@ topic; deterministic ordering; no shell, eval, pickle, or YAML; no `.env`.
 
 ## State at 2026-09-09 08:00 (resume point)
 
-Merged from this audit (thirty-six PRs): #114, #115, #116, #117, #118
+Merged from this audit (thirty-seven PRs): #114, #115, #116, #117, #118
 (round two); #119 (daily sync, four re-audit rounds); #120 (round 3b);
 #121, #123 (memory-store writers and the hermeticity guards); #122, #130
 (retrieval); #124 (session archive pipeline); #125, #133 (external services
 and glue); #138, #149 (machine glue, two re-audits each); #126, #131, #134
 (bake-off tooling); #127, #137 (concurrency-
 tolerant guard, midnight flake, hermeticity follow-ups); #143
-(hermeticity round 4a-6); #129, #140, #145, #152
+(hermeticity round 4a-6); #155 (hermeticity round 4a-7/8, the audit
+hook); #129, #140, #145, #152
 (memory readers and anchors); #132, #135, #139, #148, #153 (daily-sync
 lows);
 #136, #141, #147
@@ -967,7 +968,22 @@ Open, each with its verdict so far:
   API). Its clean-copy run with the store reached through the symlink:
   4567 passed, exit 0, no banner, store byte-identical; the
   out-of-process append via the symlink reported with the hook silent.
-  Coordinator suite, push, and a narrow re-audit of the hunk pending.
+  Coordinator suite 4652 passed, exit 0; pushed. Narrow re-audit
+  verdict merge: C1 genuinely fixed and pinned by four tests (bytes paths
+  caught too — decoded before the basename filter; a different symlink to
+  the same directory caught; a relative open after chdir caught; the
+  subprocess route reported by the snapshot half); the corrected
+  narrative empirically true; the per-open cost 0.5-0.7 µs; a full run
+  with the store reached through the symlink 4637 passed, exit 0, no
+  banner, store byte-identical. **Merged** 2026-09-10. DEFERRED: the
+  full-path equality check is unpinned (matching on basename alone
+  passes all 179 tests — a decoy `memories.jsonl` outside the store
+  would then fire); bytes paths decoded with `replace` rather than
+  `os.fsdecode`; `realpath` unwrapped against a NUL-bearing path
+  (unreachable — `open` raises before the event); a hard link to the
+  store is undetected (undocumented); the retracted "179.5 s against
+  185.3 s" figure survives in this report's round 4a-7 paragraph (it is
+  retracted here: the cost is +2.5 s per run, about 0.5 µs per open).
 - **#138** (machine-glue follow-ups, round 4d-4): re-audit verdict **do
   not merge as-is** — C1: the new `DATA_REMEDY` ("remove `data` entirely")
   prints for every non-worktree run that reaches the `local.md` check,
@@ -1497,9 +1513,9 @@ reports in all. Shawn stopped the first pass on 2026-09-09 16:5x for
 cost and resumed on 2026-09-10 to close the open branches; follow-ups
 found after that point are deferred and listed below.
 
-**What changed.** Thirty-six pull requests merged (#114-#127, #129-#154,
-#156; #155 pending its final narrow re-audit), about 800 commits on
-main, and the test suite grew from about 1,250 to about 4,650 tests.
+**What changed.** Thirty-seven pull requests merged (#114-#127, #129-#156), about 800
+commits on main, and the test suite grew from about 1,250 to about 4,650
+tests.
 The defects with live consequences, all fixed and verified:
 
 - The daily sync could drop a stash whose tracked half had never landed,
