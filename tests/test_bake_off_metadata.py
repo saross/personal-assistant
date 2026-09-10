@@ -2088,7 +2088,7 @@ class TestStrandedResults:
         what to do next.
         """
         state = {"batch_id": "batch_001", "manifest_path": recorded}
-        assert bom.state_manifest_path(state) is None
+        assert bom.state_manifest_path(state, report=True) is None
         assert bom.resolve_manifest(state) == (set(), None)
         command = bom.rebuild_map_command(
             "batch_001", Path("/tmp/out/haiku"), bom.state_manifest_path(state)
@@ -2987,13 +2987,24 @@ class TestOperatorFacingText:
         # by --haiku-apply, so a whole-text search would match that instead
         # and pass or fail for the wrong reason.
         help_text = " ".join(capsys.readouterr().out.split())
-        start = help_text.index("Path to the sample manifest")
-        manifest_help = help_text[start:help_text.index("--prompt PROMPT", start)]
+        # Slice each flag's OWN entry. The first "--prompt PROMPT" is in the
+        # usage line, so a slice anchored on it covered most of the options
+        # section: moving "unused by --haiku-apply" onto --out-dir passed.
+        manifest_start = help_text.index("Path to the sample manifest")
+        prompt_start = help_text.index("--prompt PROMPT", manifest_start)
+        manifest_help = help_text[manifest_start:prompt_start]
+        prompt_help = help_text[
+            prompt_start:help_text.index("--out-dir OUT_DIR", prompt_start)
+        ]
         assert "unused by --haiku-apply" not in manifest_help
         assert "Optional but used by --haiku-apply" in manifest_help
         assert "what --rebuild-map restores the map from" in manifest_help
-        # --prompt's wording stays: the retrieval path really does not read it.
-        assert "unused by --haiku-apply" in help_text[help_text.index("--prompt PROMPT"):]
+        # --prompt's wording stays: the retrieval path really does not read
+        # it. Asserted against --prompt's own entry, not the whole text.
+        assert "unused by --haiku-apply" in prompt_help
+        # And nowhere else claims it: --out-dir, --dry-run and the rest are
+        # used by --haiku-apply or say nothing about it.
+        assert help_text.count("unused by --haiku-apply") == 1
 
     def test_the_restored_line_names_the_manifest_used(self, tmp_path, capsys):
         out_dir = tmp_path / "out" / "haiku"
@@ -3045,6 +3056,59 @@ class TestOperatorFacingText:
         printed = capsys.readouterr().out
         assert f"restored 1 custom_id mapping(s)" in printed
         assert f"from {manifest}" in printed
+
+    def test_the_restored_line_stays_quiet_when_they_match(self, tmp_path, capsys):
+        """`if recorded:` alone would append the note to every repair.
+
+        Naming the same path twice in one sentence is noise, and it would
+        teach the reader to skip the line that matters when they differ.
+        """
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "same.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row("same-session", transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "manifest_path": str(manifest),
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(manifest),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        printed = capsys.readouterr().out
+        assert f"from {manifest}" in printed
+        assert "still records" not in printed
 
     def test_the_restored_line_names_both_when_they_differ(self, tmp_path, capsys):
         """The X/Y asymmetry was documented only in a code comment."""
@@ -3404,3 +3468,64 @@ class TestAtomicWriteDurability:
         with pytest.raises(KeyboardInterrupt):
             bom.write_json_atomic(target, {"ok": True})
         assert list(tmp_path.iterdir()) == []
+
+
+class TestDiagnosticsAreNotRepeated:
+    """The same fault twice reads like two faults."""
+
+    def test_a_malformed_manifest_path_is_reported_once(self, tmp_path, capsys):
+        """--rebuild-map reads the recorded path directly AND via resolve."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        transcript = fx.write_session_transcript(
+            tmp_path / "transcripts" / "once.jsonl", n_records=6
+        )
+        manifest = fx.write_manifest(
+            tmp_path / "manifest.json", [fx.manifest_row("once-session", transcript)]
+        )
+        (out_dir / "batch-state.json").write_text(
+            json.dumps({
+                "batch_id": "batch_001",
+                "manifest_path": 123,
+                "custom_id_to_session": {},
+            }),
+            encoding="utf-8",
+        )
+
+        class FakeBatches:
+            def retrieve(self, _batch_id):
+                return type("Batch", (), {"processing_status": "ended"})()
+
+            def results(self, _batch_id):
+                return []
+
+        fake_module = type(sys)("anthropic")
+        fake_module.Anthropic = type(
+            "FakeAnthropic", (),
+            {"__init__": lambda self, *a, **k: setattr(
+                self, "messages",
+                type("Messages", (), {"batches": FakeBatches()})(),
+            )},
+        )
+        sys.modules["anthropic"] = fake_module
+        try:
+            assert bom.main([
+                "--provider", "haiku",
+                "--haiku-apply", "batch_001",
+                "--out-dir", str(out_dir.parent),
+                "--manifest", str(manifest),
+                "--rebuild-map",
+            ]) == 0
+        finally:
+            del sys.modules["anthropic"]
+        errors = capsys.readouterr().err
+        assert errors.count("records manifest_path as int") == 1
+
+    def test_the_marker_never_reaches_the_state_file(self, tmp_path):
+        """Reporting must not mutate the state a writer then persists."""
+        out_dir = tmp_path / "out" / "haiku"
+        out_dir.mkdir(parents=True)
+        state = {"batch_id": "batch_001", "manifest_path": 123}
+        before = dict(state)
+        bom.state_manifest_path(state, report=True)
+        assert state == before

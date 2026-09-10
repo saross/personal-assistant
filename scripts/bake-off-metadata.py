@@ -828,7 +828,9 @@ def haiku_retrieve_command(batch_id: str, out_dir: Path) -> str:
 _HASHED_CUSTOM_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
-def state_manifest_path(state: dict[str, Any]) -> str | None:
+def state_manifest_path(
+    state: dict[str, Any], *, report: bool = False
+) -> str | None:
     """Return the manifest path a batch state records, if it is usable.
 
     One guard for every reader. The state is a JSON file an operator can
@@ -839,7 +841,7 @@ def state_manifest_path(state: dict[str, Any]) -> str | None:
     path = state.get("manifest_path")
     if isinstance(path, str) and path:
         return path
-    if path is not None:
+    if path is not None and report:
         # Not silence: a state whose manifest_path is a number or a list
         # behaves exactly like one that records nothing, and the operator
         # would otherwise have no way to tell those apart.
@@ -903,7 +905,7 @@ def resolve_manifest(
         nothing readable was found, so a remedy line names the placeholder
         rather than a path already known to be broken.
     """
-    recorded = state_manifest_path(state)
+    recorded = state_manifest_path(state, report=True)
     supplied = str(manifest_path) if manifest_path is not None else None
 
     if supplied is not None:
