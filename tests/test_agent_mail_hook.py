@@ -466,3 +466,51 @@ class TestEveryRoutingFieldGatesDelivery:
         here, elsewhere = mail.route(unread, "personal-assistant")
         assert [m.name for m, _ in here] == ["20260910T000002.000000Z-codex-ok.md"]
         assert elsewhere == {"invalid": 1}
+
+
+# ---- added 2026-09-10 after the cross-review of gpt-hub PR #5 ----
+
+class TestHeaderParsingMatchesTheCodexHook:
+    """The Codex-side hook was stricter on four forgery cases and right on
+    each; these pin the same verdicts here (rejection, not filtering)."""
+
+    @staticmethod
+    def _message(tmp_path, body: bytes) -> Path:
+        outbox = tmp_path / "codex" / "outbox" / "claude"
+        outbox.mkdir(parents=True, exist_ok=True)
+        path = outbox / "20260910T000003.000000Z-codex-parse.md"
+        path.write_bytes(body)
+        return path
+
+    def test_a_duplicate_known_header_rejects_the_block(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\nProject: secret-repo\n\nbody\n")
+        assert mail.read_headers(m) == {}
+        assert mail.unread_messages(tmp_path) == []
+
+    @pytest.mark.parametrize("sep", [b"\x0b", " ".encode("utf-8"), b"\r"])
+    def test_a_control_character_stays_inside_the_value(self, tmp_path, sep):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\nLane: fa" + sep + b"Project: secret\n\nbody\n")
+        headers = mail.read_headers(m)
+        assert headers.get("Project") == "any"          # not forged to "secret"
+        assert not mail.routes_here(headers, "secret")
+        assert not mail.routes_here(headers, "personal-assistant")  # the lane is invalid
+
+    def test_a_terminator_beyond_the_window_rejects_the_block(self, tmp_path):
+        filler = b"X-Pad: " + b"a" * 4_200 + b"\n"
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nProject: any\n" + filler + b"Lane: opus\n\nbody\n")
+        assert mail.read_headers(m) == {}
+        assert mail.unread_messages(tmp_path) == []
+
+    @pytest.mark.parametrize("name", [b"project", b"Project ", b"PROJECT", b"lane"])
+    def test_a_near_miss_header_name_rejects_the_block(self, tmp_path, name):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\n" + name + b": secret-repo\n\nbody\n")
+        assert mail.read_headers(m) == {}
+
+    def test_an_unknown_header_is_still_ignored_and_the_block_kept(self, tmp_path):
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nX-Extra: whatever\nProject: any\n\nbody\n")
+        assert mail.read_headers(m) == {"From": "codex", "To": "claude", "Project": "any"}
+
+    def test_the_window_is_bytes_not_characters(self, tmp_path):
+        # 4,000 multi-byte characters exceed 4,096 bytes; the terminator falls outside.
+        m = self._message(tmp_path, b"From: codex\nTo: claude\nX-Pad: " + ("é" * 4_000).encode("utf-8") + b"\n\nbody\n")
+        assert mail.read_headers(m) == {}

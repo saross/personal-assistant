@@ -84,24 +84,57 @@ def has_receipt(seen: Path, message_name: str) -> bool:
     return plain_file(seen / message_name)
 
 
+KNOWN_HEADERS = frozenset({"From", "To", *ROUTING_HEADERS})
+_KNOWN_FOLDED = {name.casefold(): name for name in KNOWN_HEADERS}
+
+
 def read_headers(message: Path) -> dict[str, str]:
     """Return the bounded header block as a dict; never any message text.
 
-    Headers end at the first blank line. Only known names are kept, so an
-    attacker-controlled body cannot smuggle a header past the blank line.
+    Headers end at the first blank line, which must fall inside the first
+    MAX_HEADER_BYTES bytes: a block with no terminator in that window is
+    rejected outright (``{}``), because a restriction written past the
+    window would otherwise be lost and the message delivered as a
+    wildcard. Only known names are kept, so an attacker-controlled body
+    cannot smuggle a header past the blank line.
+
+    Four rules, matched with the Codex-side hook after the cross-review of
+    2026-09-10 (its stricter reading was right on every count): the file is
+    read as BYTES and split on LF only, so a vertical tab, U+2028, or a
+    carriage return stays inside the value and fails the slug rule rather
+    than starting a forged header line; a duplicate known header rejects
+    the whole block rather than letting the last one win; a header name
+    that case-folds or strips to a known name without matching it exactly
+    (``project:``, ``Project :``) rejects the block rather than being
+    silently dropped, which would have turned a restriction into a
+    wildcard; and a block that is not UTF-8 rejects.
     """
     try:
-        with message.open("r", encoding="utf-8") as handle:
+        with message.open("rb") as handle:
             prefix = handle.read(MAX_HEADER_BYTES)
-    except (OSError, UnicodeError):
+    except OSError:
         return {}
     headers: dict[str, str] = {}
-    for line in prefix.splitlines():
-        if not line.strip():
+    terminated = False
+    for raw in prefix.split(b"\n"):
+        if raw.strip() == b"":
+            terminated = True
             break
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}
         name, separator, value = line.partition(":")
-        if separator and name in {"From", "To", *ROUTING_HEADERS}:
-            headers[name] = value.strip()
+        if not separator:
+            continue
+        if name in KNOWN_HEADERS:
+            if name in headers:
+                return {}          # a duplicate known header rejects the block
+            headers[name] = value.strip(" \t")
+        elif name.strip().casefold() in _KNOWN_FOLDED:
+            return {}              # a near-miss name would silently widen delivery
+    if not terminated:
+        return {}
     return headers
 
 
