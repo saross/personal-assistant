@@ -2465,8 +2465,11 @@ parser's target set from the fixture only, cleanup safe, the
 directory route sound, host residue demote-only; one test gap (the
 nested parent validator can be replaced with `pass` and 164 still
 pass — three forged parents HEAD rejects), three lows. Verdict mailed;
-Astra may land it; **then Shawn runs the baseline-only comparison**; a
-42 of 42 is the evidence for the production-acceptance gate (Shawn's).
+Astra closed the gap and the invariant within minutes (2e27b1f, tests
+and record only; the `pass` mutant now killed by each of three
+forgeries singly; the fixture invariant order-independent) — approved.
+**Then Shawn runs the baseline-only comparison**; a 42 of 42 is the
+evidence for the production-acceptance gate (Shawn's).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
