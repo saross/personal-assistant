@@ -2505,6 +2505,11 @@ authority; on a later approval date update the policy's `admitted_on`
 and the test's pinned date together. Three gates remain: Shawn's yes,
 the independently prepared and preserved clone, and live lane
 validation plus the exact activation diff before access is enabled.
+Astra then relayed Shawn's approval given in the Codex session ("I
+approve this approach"), recorded on gpt-hub main 0616b43 — noted on
+PR #158 as a relay; Shawn's direct confirmation to this session asked
+for before the date is finalised; the merge hold stands for the clone,
+the preservation, and the live validation.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
