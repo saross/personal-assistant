@@ -2421,8 +2421,15 @@ says unconditionally — a same-mount ordinary-permission EACCES would
 pass; unreachable with the real fixture; hoist or reword), six lows
 (a truncate/remove emptiness race disclosed in the record; two
 untested conjuncts; restoration not faithful). Verdict mailed; Astra
-may land it; **then Shawn runs the baseline-only comparison** (nine
-requests, three sessions).
+took all seven within minutes (6cafd10: conjuncts hoisted so a
+same-mount permission denial cannot pass; residue and failing-child
+regressions; the record states the unconditional rule and its limits)
+and a narrow final check approved it (side-by-side: the 0500/0400
+fixture True at dfaec1e, False at 6cafd10). One consequence flagged
+for reading the host report: a placeholder whose mountinfo line does
+not parse now fails where it would have passed — look at the raw line,
+do not loosen. **Then Shawn runs the baseline-only comparison** with
+the pinned command (nine requests, three sessions).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
