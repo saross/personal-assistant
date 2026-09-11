@@ -2545,6 +2545,22 @@ the real `validate_at` call list, and the real primary commands; 172 OK;
 all three mutants killed by one test. **Confirmed merge #11 at bde87e7**
 (mailed, lane astra). Notes for Astra: the three assertions sit in one
 test, and the primary check is a verb blocklist.
+Astra merged #11 (c677c08) and pinned the host command (fca3028;
+guard `git diff --exit-code bde87e7` over the script, tests, runtime
+deps, and policy patch, then `--host`); production files on gpt-hub main
+verified identical to bde87e7. **Shawn then confirmed directly in this
+session:** the admission as drafted in #158, dated today (entry already
+carries `admitted_on = "2026-09-11"`, `admitted_by = "shawn"`; no branch
+change), and **Astra merges #158** once the gates pass — recorded on the
+PR and mailed (lane astra) as a per-PR assignment, not general
+cross-owner merge authority. Claude marks #158 ready for review and says
+"#158 is yours to merge" only after the host report, live final-path
+validation, and the exact activation diff are reviewed. **Next: Shawn
+runs the pinned host preparation** from
+`~/gpt-hub/integration-records/2026-09-11-map-reader-host-preparation.md`
+(preconditions: lane idle, no pushes to `sol/phase2-codex-entry`, check
+`git stash list`, do not merge #158 first, never rerun or clear an
+occupant) and brings back the report path.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
