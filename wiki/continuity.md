@@ -2409,7 +2409,20 @@ existing `agents/**` restriction; baseline-only host command, nine
 requests; a stricter pass rule than proposed — any successful mutation
 fails even if contained, EBUSY auxiliary only, host-side post-session
 absence additionally required, unknown observations fail). Accepted
-without change; awaiting the head for review; host runs remain Shawn's.
+without change. Astra implemented it as gpt-hub PR #9 (dfaec1e; 1,600
+lines, 153 tests) within twenty minutes; adversarial review verdict
+merge — the mount join reads per-mount options (right for a read-only
+bind), eight false-pass shapes all fail, eight parser forgeries
+rejected, the host-side observation runs after session close and
+before fixture cleanup as a demote-only conjunct, thirteen mutations
+killed; one medium (the code demands the mount-identity and read-only
+conjuncts only when EBUSY substitutes for a denial, while the record
+says unconditionally — a same-mount ordinary-permission EACCES would
+pass; unreachable with the real fixture; hoist or reword), six lows
+(a truncate/remove emptiness race disclosed in the record; two
+untested conjuncts; restoration not faithful). Verdict mailed; Astra
+may land it; **then Shawn runs the baseline-only comparison** (nine
+requests, three sessions).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
