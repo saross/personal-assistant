@@ -2561,6 +2561,27 @@ runs the pinned host preparation** from
 (preconditions: lane idle, no pushes to `sol/phase2-codex-entry`, check
 `git stash list`, do not merge #158 first, never rerun or clear an
 occupant) and brings back the report path.
+**Shawn ran it** (report `/tmp/sol-map-reader-preparation-y39i83bd/report.json`,
+sha 6fb93201…; status prepared-awaiting-policy-merge-and-activation;
+clone 143 s, total 152 s; 8.19 GiB on disk, 1.80 GiB pack; zero model
+calls). Fresh-context read-only review of the live state and the exact
+activation diff: lane has a real `.git` directory at 59193a1e with one
+branch-limited refspec and full history (rev-list 2479 = primary's);
+archive is a gitdir-pointer worktree, registered in the primary in place
+of the lane; primary HEAD/index/refs/six stashes unchanged; staging
+absent; pin chain closes (candidate policy byte-identical to #158);
+`validate_at` passes the lane, fails archive and primary; diff = one
+write grant on the lane `.git` + 17 renderer-generated read carve-outs
+for the `claude-admit-map-reader` worktree + one provenance comment.
+**Cleared: #158 marked ready, retitled, and handed to Astra to merge at
+0858bb5** ("#158 is yours to merge"), per Shawn. No objection to Astra
+grouping the reviewed instruction refresh (common.md at 85f0111, on
+main; Codex overlay a61fb64) with the activation host command, provided
+the guide says so. Follow-ups: re-render after merge (provenance
+comment); cleanup pass on per-worktree carve-outs after the worktree is
+removed; keep archive and activation backup until the edit/commit/push/
+PR demonstration. **Next:** Astra merges #158; Claude fast-forwards the
+primary checkout; Shawn runs the activation checkpoint on his terminal.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
