@@ -49,6 +49,11 @@ commit 1a546ab; verify against the current file before editing.
   Before writing the message, run `git diff --cached --stat` and describe
   what is actually staged: three times in this series a commit's message
   described less than it contained (added 2026-09-09 after round 3c-8).
+- Wait on a long-running job with ONE background waiter and let its
+  completion notification arrive. Never re-issue a polling loop each time
+  you check: one agent accumulated 48 sleeping `until … sleep` shells
+  across four rounds and the machine ran to 1.2 GB free of 30 GB before
+  the system reclaimed them (added 2026-09-11 after round 4d-8).
 
       Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
       Claude-Session: https://claude.ai/code/session_01EskLWHYW5b4jmqL5yWgNiS
