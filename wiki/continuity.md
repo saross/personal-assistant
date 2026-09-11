@@ -2601,6 +2601,17 @@ Shawn runs the activation block on his terminal, returns the output,
 and relaunches Codex with the map-reader clone as the workspace.** Then
 Claude removes the `claude-admit-map-reader` worktree and Astra drops
 the 17 carve-outs at the next render.
+**Activation done** (Shawn ran the block on the evening of the 11th;
+Astra verified on 2026-09-12: check-only activation now has no diff,
+installed instructions match the reviewed composition, backup at
+`~/.codex/backups/ownership-activation-ike82w3m`). The Codex pilot
+session holds its own `.git` write grant on the admitted clone. Astra is
+running the first real pilot: a short collaboration handoff guide in
+map-reader-llm from remote main, lint, commit, push, and a PR for
+Claude's independent review; no experiment, no model calls. The
+`claude-admit-map-reader` worktree stays until Astra confirms the
+installed-state capture is done. **Next: review the pilot PR when it
+arrives; then remove the worktree.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
