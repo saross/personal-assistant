@@ -2497,8 +2497,14 @@ and path); validate schema 2 / 9 rules / 18 cases / 1 clone; full suite
 4684. Placeholders `admitted_on`/`admitted_by` pending. The merged #113
 worktree removed (it had drawn seventeen read-only carve-outs in
 Astra's check-only activation). **Shawn's decisions:** run the
-migration on his terminal, then approve the admission; Astra's
-read-only review of 0858bb5 first.
+migration on his terminal, then approve the admission. Astra's
+read-only review of 0858bb5: technically approved (policy byte-identical
+to the proposal; verifier unchanged; 14 tests; the linked worktree
+still correctly fails the real validator), explicitly not merge
+authority; on a later approval date update the policy's `admitted_on`
+and the test's pinned date together. Three gates remain: Shawn's yes,
+the independently prepared and preserved clone, and live lane
+validation plus the exact activation diff before access is enabled.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
