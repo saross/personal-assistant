@@ -2484,7 +2484,21 @@ closed** for the four target shapes on this runtime and machine, with
 the record's stated limits. Astra is preparing step 3, the concrete
 first map-reader lane admission proposal; Claude reviews the diff
 against the plan and `ownership.toml`; the admission is Shawn's
-explicit approval and nothing is applied before it.
+explicit approval and nothing is applied before it. Astra sent the
+proposal within minutes: a patch adding the single `[[admitted_clones]]`
+entry `codex-map-reader-llm-phase2` (the example that has sat commented
+in `ownership.toml` since the 7th), plus a lane-migration plan (clone
+the `sol/phase2-codex-entry` branch full single-branch into a staging
+path, verify, archive the linked worktree, place the clone at the
+admitted path; ~2 GB of objects on disk). Claude prepared **DRAFT PR
+#158** (0858bb5): the entry verbatim; the verifier's tests updated (the
+live-policy test pins the one entry, the fixture lane given its own id
+and path); validate schema 2 / 9 rules / 18 cases / 1 clone; full suite
+4684. Placeholders `admitted_on`/`admitted_by` pending. The merged #113
+worktree removed (it had drawn seventeen read-only carve-outs in
+Astra's check-only activation). **Shawn's decisions:** run the
+migration on his terminal, then approve the admission; Astra's
+read-only review of 0858bb5 first.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
