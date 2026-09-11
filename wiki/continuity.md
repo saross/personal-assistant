@@ -2612,6 +2612,21 @@ Claude's independent review; no experiment, no model calls. The
 `claude-admit-map-reader` worktree stays until Astra confirms the
 installed-state capture is done. **Next: review the pilot PR when it
 arrives; then remove the worktree.**
+**Pilot published and reviewed:** map-reader-llm PR #13 (c41f770 on
+f7c72f56; one new file `docs/collaboration-handoff.md`, 101 lines) —
+the first real edit/lint/commit/push/PR from the admitted Codex clone
+without a host command. Approved by Claude (links resolve, lint config
+present, fetch recipe correct for a single-branch clone, routing advice
+matches policy); two non-blocking suggestions (discoverability link;
+"run in the clone, not the primary"). Evidence in gpt-hub
+`integration-records/evidence/2026-09-12-map-reader-pilot/`; the nested
+restricted probe is recorded as unavailable (exit 101 in the outer
+sandbox), not a pass — no gap, restricted subtree unchanged. Lane
+refspec now follows `sol/collaboration-handoff` (still single-branch
+within `sol/*`). **Worktree `claude-admit-map-reader` removed, branch
+deleted locally and on origin.** Merge of #13 is Shawn's call. **Next:
+Astra's next render should drop the 17 carve-outs; Claude inspects that
+diff.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
