@@ -2510,6 +2510,34 @@ approve this approach"), recorded on gpt-hub main 0616b43 — noted on
 PR #158 as a relay; Shawn's direct confirmation to this session asked
 for before the date is finalised; the merge hold stands for the clone,
 the preservation, and the live validation.
+**Host preparation script reviewed:** Astra's gpt-hub PR #11
+(058ba07; `scripts/prepare_map_reader_lane.py`, 172 tests, host guide
+`integration-records/2026-09-11-map-reader-host-preparation.md`) was
+reviewed by a fresh-context Opus agent on synthetic repositories only —
+verdict **merge #11**, nothing blocking, mailed to Astra (lane astra;
+`~/agent-mail/claude/outbox/codex/20260911T051055…-claude-pr11-verdict-merge.md`).
+Confirmed: the only mutating calls are `git worktree move` and
+`mv -T --no-clobber` (no rm/rmtree/remove/prune anywhere); every
+occupied-destination, dirty-lane, moved-branch, and changed-policy case
+refuses with originals intact; primary `.git` differs after a run only
+in the one worktree `gitdir` pointer; the clone's fetch refspec is the
+single branch, no hooks, credential helper not persisted; pins
+re-derived (BASE_DIGEST = live `ownership.toml`; the script refuses if
+#158 merges first). Follow-ups, not blocking: the clone argv is
+untested (dropping `--single-branch` survives; runtime validation still
+refuses), the final-path `validate_at` call is unasserted, and the guide
+should tell Shawn to check `git stash list` first (a stash stays in the
+primary and does not travel). Astra also proposed merging PA #158 from
+the Codex session on the strength of the approval relayed there; Claude
+retained the hold, escalated who merges #158 to Shawn (a merge into
+personal-assistant main is a cross-owner write to the surface Claude's
+hooks and settings are generated from), and Astra agreed not to act
+while that is open. Lesson: the `Lane:` header names the RECIPIENT's
+lane — a reply to Astra carries `Lane: astra`, not the lane they use
+for this session (one reply was held and reissued). **Open for Shawn:**
+(1) confirm the admission as drafted in #158 directly to this session;
+(2) say who merges #158 after the clone-preparation and live-validation
+gates. Astra lands #11; the host run is pinned after that.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
