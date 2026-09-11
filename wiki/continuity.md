@@ -2588,6 +2588,19 @@ told (lane astra). Astra now rerenders, archives the final diff, and
 pins the activation checkpoint, which will also install the reviewed
 instruction composition; Claude reads the pinned guide before Shawn
 runs it.
+**Activation guide read** (`~/gpt-hub/integration-records/2026-09-11-map-reader-prepared.md`,
+sha 36539bb7…; gpt-hub main 4a489fe, production still identical to
+bde87e7): the host block checks a pinned source/installed-state digest
+list, runs the activator check-only, `cmp`s it against the archived
+check (18 additions, no removals, no hooks change), then `--apply`
+(backup under `~/.codex/backups/`, atomic write, self-rollback), then
+`install-agents.sh --install` (routing paragraph from common.md 85f0111
+plus the Codex overlay; prior text preserved). No blocking issue; Astra
+asked to commit the still-untracked guide and evidence first. **Next:
+Shawn runs the activation block on his terminal, returns the output,
+and relaunches Codex with the map-reader clone as the workspace.** Then
+Claude removes the `claude-admit-map-reader` worktree and Astra drops
+the 17 carve-outs at the next render.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
