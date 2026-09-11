@@ -61,6 +61,18 @@ proposal_routes = ["~/gpt-hub/integration-records/", "~/agent-mail/codex/outbox/
 # admitted_on = "2026-09-07"
 # admitted_by = "shawn"
 
+[[admitted_clones]]
+id = "codex-map-reader-llm-phase2"
+agent = "codex"
+repository = "~/Code/map-reader-llm"
+lane_path = "~/worktrees/map-reader-llm/sol-phase2-codex-entry"
+remote = "https://github.com/saross/map-reader-llm.git"
+branch_namespace = "sol/*"
+storage = "independent-clone"
+clone_mode = "full-single-branch"
+admitted_on = "2026-09-11"
+admitted_by = "shawn"
+
 [[denials]]
 id = "agent-mail-claude"
 owner = "claude"

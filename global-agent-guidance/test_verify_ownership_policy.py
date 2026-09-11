@@ -38,10 +38,10 @@ class OwnershipPolicyVerifierTests(unittest.TestCase):
 
     ADMISSION = """
 [[admitted_clones]]
-id = "codex-map-reader-llm-phase2"
+id = "codex-map-reader-llm-fixture"
 agent = "codex"
 repository = "~/Code/map-reader-llm"
-lane_path = "~/worktrees/map-reader-llm/sol-phase2-codex-entry"
+lane_path = "~/worktrees/map-reader-llm/sol-phase2-fixture-lane"
 remote = "https://github.com/saross/map-reader-llm.git"
 branch_namespace = "sol/*"
 storage = "independent-clone"
@@ -58,16 +58,34 @@ admitted_by = "shawn"
             candidate.write_text(text)
             return verifier.load_policy(candidate)
 
-    def test_live_policy_admits_no_clones_yet(self) -> None:
-        self.assertEqual(self.policy.get("admitted_clones", []), [])
+    def test_live_policy_admits_exactly_the_first_map_reader_lane(self) -> None:
+        """The first real admission (2026-09-11): one lane, every field pinned.
+
+        Until then this test asserted an empty list. A second admission must
+        extend this assertion deliberately, with its own review.
+        """
+        self.assertEqual(self.policy.get("admitted_clones", []), [{
+            "id": "codex-map-reader-llm-phase2",
+            "agent": "codex",
+            "repository": "~/Code/map-reader-llm",
+            "lane_path": "~/worktrees/map-reader-llm/sol-phase2-codex-entry",
+            "remote": "https://github.com/saross/map-reader-llm.git",
+            "branch_namespace": "sol/*",
+            "storage": "independent-clone",
+            "clone_mode": "full-single-branch",
+            "admitted_on": "2026-09-11",
+            "admitted_by": "shawn",
+        }])
+
+    LIVE_ADMISSIONS = 1   # the fixture below is appended to the live policy
 
     def test_well_formed_admission_is_accepted(self) -> None:
         policy = self.load_with(self.ADMISSION)
-        self.assertEqual(len(policy["admitted_clones"]), 1)
+        self.assertEqual(len(policy["admitted_clones"]), self.LIVE_ADMISSIONS + 1)
 
     def test_consistent_upper_case_spelling_is_admissible(self) -> None:
         policy = self.load_with(self.ADMISSION.replace("map-reader-llm", "Map-Reader-LLM"))
-        self.assertEqual(len(policy["admitted_clones"]), 1)
+        self.assertEqual(len(policy["admitted_clones"]), self.LIVE_ADMISSIONS + 1)
 
     def test_trimmed_required_fields_list_is_rejected(self) -> None:
         base = (ROOT / "ownership.toml").read_text().replace(
@@ -85,7 +103,7 @@ admitted_by = "shawn"
                        "saross/map-reader-llm.GIT"):
             with self.subTest(remote=remote):
                 policy = self.load_with(self.ADMISSION.replace("saross/map-reader-llm.git", remote))
-                self.assertEqual(len(policy["admitted_clones"]), 1)
+                self.assertEqual(len(policy["admitted_clones"]), self.LIVE_ADMISSIONS + 1)
 
     def test_malformed_admissions_are_rejected(self) -> None:
         variants = {
@@ -95,9 +113,9 @@ admitted_by = "shawn"
             "lane under wrong repo": self.ADMISSION.replace(
                 "worktrees/map-reader-llm/", "worktrees/other-repo/"),
             "lane without workstream": self.ADMISSION.replace(
-                "sol-phase2-codex-entry", "sol-"),
+                "sol-phase2-fixture-lane", "sol-"),
             "primary checkout as lane": self.ADMISSION.replace(
-                "~/worktrees/map-reader-llm/sol-phase2-codex-entry", "~/Code/map-reader-llm"),
+                "~/worktrees/map-reader-llm/sol-phase2-fixture-lane", "~/Code/map-reader-llm"),
             "wrong namespace": self.ADMISSION.replace('"sol/*"', '"main"'),
             "unknown agent": self.ADMISSION.replace('agent = "codex"', 'agent = "astra"'),
             "home repository": self.ADMISSION.replace(
@@ -116,9 +134,9 @@ admitted_by = "shawn"
             "wrong storage": self.ADMISSION.replace("independent-clone", "linked-worktree"),
             "missing field": self.ADMISSION.replace('admitted_on = "2026-09-07"\n', ""),
             "duplicate id": self.ADMISSION + self.ADMISSION.replace(
-                "sol-phase2-codex-entry", "sol-second"),
+                "sol-phase2-fixture-lane", "sol-second"),
             "duplicate lane": self.ADMISSION + self.ADMISSION.replace(
-                "codex-map-reader-llm-phase2", "second-id"),
+                "codex-map-reader-llm-fixture", "second-id"),
         }
         for label, text in variants.items():
             with self.subTest(label=label), self.assertRaises(ValueError):
@@ -134,7 +152,7 @@ admitted_by = "shawn"
                 "~/Code/map-reader-llm", "~/Code/../gpt-hub").replace(
                     "worktrees/map-reader-llm/", "worktrees/gpt-hub/"),
             "duplicate alias": self.ADMISSION + self.ADMISSION.replace(
-                "codex-map-reader-llm-phase2", "second-id").replace(
+                "codex-map-reader-llm-fixture", "second-id").replace(
                     "worktrees/map-reader-llm/", "worktrees/map-reader-llm//"),
             "empty remote": self.ADMISSION.replace(
                 "https://github.com/saross/map-reader-llm.git", "https://"),
