@@ -2636,6 +2636,14 @@ checkpoint rather than a standalone re-activation. **Step 3 pilot
 complete from Claude's side; #13 is Shawn's to merge at 8bd7de5.**
 Open: 17-rule cleanup at the next checkpoint; archived linked worktree
 and activation backups retained until Shawn closes the pilot.
+**Shawn merged #13 and declared the pilot closed (2026-09-12).** Astra's
+durable record is on gpt-hub main (49c37ad,
+`integration-records/2026-09-12-map-reader-pilot.md`). The archived
+linked worktree and the activation backup are released; removal is a
+host action, proposed to Astra as part of the next reviewed host
+checkpoint with the 17-rule cleanup. **Next integration step (Astra
+leads): shared-memory registration.** Claude reviews the proposal
+against the plan when it arrives.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
