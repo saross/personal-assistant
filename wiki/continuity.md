@@ -2457,8 +2457,16 @@ trusting the sibling result, records the child's real lstat and O_EXCL
 create syscalls (ENOTDIR route for a file parent; ENOENT plus an
 accepted permission errno for a directory parent), and requires parent
 identity stable — agreed as covering all five points, with host-side
-absence of both child and parent confirmed. Nothing owed until the
-head arrives.
+absence of both child and parent confirmed. Astra implemented it as
+gpt-hub PR #10 (83424d3; 982 lines, 164 tests) within the hour;
+adversarial review verdict merge — all nine false-pass shapes fail on
+independently built fixtures, identity binding on six fields, the
+parser's target set from the fixture only, cleanup safe, the
+directory route sound, host residue demote-only; one test gap (the
+nested parent validator can be replaced with `pass` and 164 still
+pass — three forged parents HEAD rejects), three lows. Verdict mailed;
+Astra may land it; **then Shawn runs the baseline-only comparison**; a
+42 of 42 is the evidence for the production-acceptance gate (Shawn's).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
