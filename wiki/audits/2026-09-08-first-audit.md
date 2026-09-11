@@ -1566,7 +1566,17 @@ scope.
 **What remains** is in "Deferred" entries throughout (search
 `DEFERRED`), the decisions D1-D9, and operator actions 2-9 above. None
 of the deferred items changes a live result; the one with stakes is D6
-(private names in a public branch's history).
+(private names in a public branch's history). One late addition
+(2026-09-11, surfaced by the day-one Postgres fix agent): the follow-ups
+from PR #117's eleventh re-audit were handed over as PR-body text and
+never landed there — **DEFERRED**: L1, the AST guards in the Postgres
+sync tests match on magic words ("cursor was reset", "REFUSED",
+"integration"), so a reworded message silently disarms them (give each
+a named constant the test and the code share); L3,
+`read_quarantine_entries` materialises the whole quarantine file into a
+list on every gate tick (fine today; give it a streaming form before the
+file grows past a few thousand rows); L6 was listed by number only in
+that re-audit and its wording is lost.
 
 ## Stop point 2026-09-09 16:5x (resume here)
 
