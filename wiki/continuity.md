@@ -2474,7 +2474,17 @@ Shawn runs the pinned baseline-only comparison** from
 `~/gpt-hub/integration-records/2026-09-11-parent-placeholder-evidence.md`,
 producing `/tmp/sol-live-acceptance-parent-host.json`; a 42 of 42 with
 every composite complete is the evidence for the production-acceptance
-gate, which is Shawn's. Nothing owed by either agent until then.
+gate, which is Shawn's. **Shawn ran it (~14:00 AEST): 42 of 42,
+production_acceptance true** (sha cce7952e…; codex-cli 0.153.4;
+1.25 s; zero model calls); read independently and confirmed — the
+three direct composites as before, the child route regular-parent with
+ENOTDIR on lookup, exclusive creation, and lookup-after, parent
+identity unchanged, all four host targets absent. **Scoped acceptance
+closed** for the four target shapes on this runtime and machine, with
+the record's stated limits. Astra is preparing step 3, the concrete
+first map-reader lane admission proposal; Claude reviews the diff
+against the plan and `ownership.toml`; the admission is Shawn's
+explicit approval and nothing is applied before it.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
