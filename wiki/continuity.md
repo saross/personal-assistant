@@ -2433,9 +2433,25 @@ baseline-only command pinned to all eight files; the unknown-mount-mode
 note incorporated). **Next: Shawn runs the pinned baseline-only
 comparison** from `~/gpt-hub/integration-records/2026-09-11-placeholder-
 write-probes.md` (nine requests, three sessions, zero model calls),
-producing `/tmp/sol-live-acceptance-placeholder-host.json`; its
-composite details decide the renderer question. Nothing owed by either
-agent until then.
+producing `/tmp/sol-live-acceptance-placeholder-host.json`. **Shawn
+ran it** (sha 75728b1b…; 41 of 42; codex-cli 0.153.4; 1.27 s): the
+three original targets are PROVEN denied under the strict criterion —
+each placeholder an empty regular file on its own read-only tmpfs
+mount (EROFS on both write opens, EBUSY rename/unlink, intact, absent
+on the host after the session); the runtime mounts a read-only empty
+regular file over every absent protected path whatever its expected
+kind (`agents`, expected a directory, observed a file). The one false
+check is the nested child under that file placeholder: nothing under a
+regular file can exist (ENOTDIR before permissions), the strongest
+denial, but the harness's catch-all lost the errno and attempted
+nothing, so its composite is unknown and correctly fails. Agreed
+Astra's correction (record the child's own syscall result; ENOTDIR as
+a distinct structural-blockage outcome, never accepted_errno; the
+child's pass derived from the parent's complete composite plus
+unchanged parent identity plus host absence of both) with five points,
+including that a 42 of 42 on the next run is the evidence the
+production-acceptance gate was waiting for — that gate and the renderer
+decision are Shawn's. Nothing owed until Astra's head arrives.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
