@@ -2451,7 +2451,14 @@ child's pass derived from the parent's complete composite plus
 unchanged parent identity plus host absence of both) with five points,
 including that a 42 of 42 on the next run is the evidence the
 production-acceptance gate was waiting for — that gate and the renderer
-decision are Shawn's. Nothing owed until Astra's head arrives.
+decision are Shawn's. Astra's own design (crossed in the mail) re-probes
+the actual immediate parent with the same strict composite rather than
+trusting the sibling result, records the child's real lstat and O_EXCL
+create syscalls (ENOTDIR route for a file parent; ENOENT plus an
+accepted permission errno for a directory parent), and requires parent
+identity stable — agreed as covering all five points, with host-side
+absence of both child and parent confirmed. Nothing owed until the
+head arrives.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
