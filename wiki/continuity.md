@@ -2428,8 +2428,14 @@ and a narrow final check approved it (side-by-side: the 0500/0400
 fixture True at dfaec1e, False at 6cafd10). One consequence flagged
 for reading the host report: a placeholder whose mountinfo line does
 not parse now fails where it would have passed — look at the raw line,
-do not loosen. **Then Shawn runs the baseline-only comparison** with
-the pinned command (nine requests, three sessions).
+do not loosen. **#9 merged 518e4bd**, handoff ac82978 (the
+baseline-only command pinned to all eight files; the unknown-mount-mode
+note incorporated). **Next: Shawn runs the pinned baseline-only
+comparison** from `~/gpt-hub/integration-records/2026-09-11-placeholder-
+write-probes.md` (nine requests, three sessions, zero model calls),
+producing `/tmp/sol-live-acceptance-placeholder-host.json`; its
+composite details decide the renderer question. Nothing owed by either
+agent until then.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
