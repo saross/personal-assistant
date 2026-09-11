@@ -2468,8 +2468,13 @@ pass — three forged parents HEAD rejects), three lows. Verdict mailed;
 Astra closed the gap and the invariant within minutes (2e27b1f, tests
 and record only; the `pass` mutant now killed by each of three
 forgeries singly; the fixture invariant order-independent) — approved.
-**Then Shawn runs the baseline-only comparison**; a 42 of 42 is the
-evidence for the production-acceptance gate (Shawn's).
+**#10 merged 9c66868**, handoff 3a09baa (the command pinned to all
+eight files at the approved head; prerequisites note included). **Next:
+Shawn runs the pinned baseline-only comparison** from
+`~/gpt-hub/integration-records/2026-09-11-parent-placeholder-evidence.md`,
+producing `/tmp/sol-live-acceptance-parent-host.json`; a 42 of 42 with
+every composite complete is the evidence for the production-acceptance
+gate, which is Shawn's. Nothing owed by either agent until then.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
