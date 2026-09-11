@@ -2538,6 +2538,13 @@ for this session (one reply was held and reissued). **Open for Shawn:**
 (1) confirm the admission as drafted in #158 directly to this session;
 (2) say who merges #158 after the clone-preparation and live-validation
 gates. Astra lands #11; the host run is pinned after that.
+Astra closed all three follow-ups within the hour as bde87e7 (tests,
+guide, and evidence only; `git diff -- scripts config hooks` empty);
+second fresh-context check: the new assertions read the real clone argv,
+the real `validate_at` call list, and the real primary commands; 172 OK;
+all three mutants killed by one test. **Confirmed merge #11 at bde87e7**
+(mailed, lane astra). Notes for Astra: the three assertions sit in one
+test, and the primary check is a verb blocklist.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
