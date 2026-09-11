@@ -2582,6 +2582,12 @@ comment); cleanup pass on per-worktree carve-outs after the worktree is
 removed; keep archive and activation backup until the edit/commit/push/
 PR demonstration. **Next:** Astra merges #158; Claude fast-forwards the
 primary checkout; Shawn runs the activation checkpoint on his terminal.
+**#158 merged by Astra** (554b7e3, --match-head-commit at 0858bb5);
+primary checkout fast-forwarded; live policy verifier clones=1; Astra
+told (lane astra). Astra now rerenders, archives the final diff, and
+pins the activation checkpoint, which will also install the reviewed
+instruction composition; Claude reads the pinned guide before Shawn
+runs it.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
