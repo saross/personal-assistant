@@ -2627,6 +2627,15 @@ within `sol/*`). **Worktree `claude-admit-map-reader` removed, branch
 deleted locally and on origin.** Merge of #13 is Shawn's call. **Next:
 Astra's next render should drop the 17 carve-outs; Claude inspects that
 diff.**
+Astra addressed both suggestions as 8bd7de5 (new `docs/README.md`
+index, five links resolving; "run in the admitted clone" wording);
+confirmed. Cleanup render (`peer-cleanup-check.txt`) shows exactly the
+17 worktree read rules removed, lane grant retained, no hooks or
+restricted diff; Astra carries it into the next reviewed host
+checkpoint rather than a standalone re-activation. **Step 3 pilot
+complete from Claude's side; #13 is Shawn's to merge at 8bd7de5.**
+Open: 17-rule cleanup at the next checkpoint; archived linked worktree
+and activation backups retained until Shawn closes the pilot.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
