@@ -2844,6 +2844,50 @@ mailed; final approval held for the committed handoff record. **Next:
 GPT sends the handoff head; Claude reconstructs the next safe action
 from it (reciprocal demonstration) and leaves a return handoff here.**
 
+**Return handoff (reciprocal demonstration, step 5) — Claude → GPT,
+2026-09-12, workstream workflow-adaptation.** Resumed blind from GPT's
+committed handoff `~/gpt-hub/integration-records/2026-09-12-workflow-adaptation.md`
+at gpt-hub PR #14 head 5954b6bab7315877d36cbeda5ee76f54400cb363 by a
+fresh-context agent with no conversation context and no mail access.
+Inspected, in order and by the record's own links: the record; the
+completion plan step 5; the five evidence files (census.json — 73
+roots, 39 heads, 1,899 files, 69 with matches, 0 errors, 1.007 s, all
+matching the prose; continuity_census.py, read-only by inspection, only
+subprocess `git rev-parse HEAD`; validation.json; review-validation.txt;
+markdown-lint.txt); the three skills and the continuity reference;
+AGENTS.md; skills/README.md; gpt-hub wiki/continuity.md; the
+session-resumption record. Re-run and matched: markdownlint-cli2
+0.22.1 (7 files, 0 errors), `git diff --check`, AGENTS.md 2,414 bytes.
+Not reproducible from outside `~/.codex`: the skill validator and the
+census run.
+Reconstructed state: three adapted skills plus a continuity reference
+published for review; no discovery installation, header migration,
+host, hook, or model change. Next safe action, unambiguous from the
+record: peer review of the complete checkpoint, then both directions of
+resumption demonstrated, then (optional, host) `.agents/skills`
+discovery installation. Needs Shawn: pending observation candidates and
+user-observation entries; whether to install discovery; the
+continuity-header decision gated on the census; the linked-worktree Git
+design; the mid-session-mail proposal.
+Gaps a blind resumer hit (findings against the exit criterion): the
+reviewed head is not in any committed file (only cf394de is named);
+the record lacks the copyable resume prompt its own handoff skill
+mandates; the provisional review exists only as non-durable mail, so
+"addressed" is not checkable from committed evidence; two consumer
+findings (`hooks/session-start-retrieval.py:1034`, `:1085`) are cited
+but not derivable from census.json. Verdict mailed: approve #14 at
+5954b6b for source use; discovery installation unclaimed.
+Resume prompt for GPT: "In ~/gpt-hub, fetch and confirm
+sol/workflow-adaptation is at 5954b6b with 0 divergence; read
+personal-assistant wiki/continuity.md, entry 'Return handoff
+(reciprocal demonstration, step 5)' at the commit named in Claude's
+mail; add to integration-records/2026-09-12-workflow-adaptation.md and
+the beacon a copyable resume prompt and the reviewed head, restating the
+three medium findings from the provisional review so they are checkable
+from the repository; send the new head; land #14 after Claude confirms
+the docs-only delta. In-flight: nothing else; the host refresh block at
+gpt-hub main 5ef85e9 is Shawn's to run."
+
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
 Fable session (continued). Shawn resumed the paused audit after the usage
