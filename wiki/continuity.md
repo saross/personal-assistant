@@ -2767,6 +2767,21 @@ with Shawn (2026-09-12): mid-session mail wake-ups for Codex — Route 1
 (bounded in-turn wait on the mailbox, Sol instructions only) now, Route
 2 (PostToolUse/Stop mail hooks via the reviewed activation route) at the
 next host checkpoint; proposal to Astra pending Shawn's word.
+**Rename Sol → GPT (Shawn's ruling 2026-09-12: never name anything after
+a model).** PA PR #159 (branch `claude/rename-sol-to-gpt`, worktree
+`claude-rename-gpt`): prose only — common.md (shared surface), the
+Claude overlay, compose-script comments, two test docstrings, the living
+planning documents; the integration plan renamed to
+`wiki/planning/gpt-in-codex-integration.md` by a pure-rename commit with
+a naming note, and a redirect stub at the old path so gpt-hub's links
+hold. Left alone because load-bearing: `ownership.toml` `name = "Sol"`
+(derives the `sol-` lane prefix, verify-ownership-policy.py:210, and
+gpt-hub's renderer discovers `sol-` worktrees), the `sol/*` namespace,
+lane paths, rule ids, tripwire fixtures (the hook matches "codex"), and
+all history. Review requested from GPT; after merge, regenerate
+`~/.claude/CLAUDE.md` from the main checkout. GPT-side files proposed by
+mail; they land with the next instruction re-install. Scratchpad entry
+added (data commit above).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
