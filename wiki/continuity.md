@@ -2907,6 +2907,17 @@ discovery optional and uninstalled. Open with GPT: the mid-session-mail
 proposal (recorded follow-up on their side). Open with Shawn (optional):
 discovery installation; pending observation candidates in gpt-hub; the
 continuity-header decision; the linked-worktree Git design.
+**Mid-session mail proposal accepted by GPT** (Shawn asked them for
+continuous monitoring): implementing the bounded in-turn wait plus
+PostToolUse and Stop delivery on `sol/continuous-agent-mail`, pinning
+event/output semantics from the official hook documentation, routing
+enforced before notification, no receipts from notifications, host
+installation via the reviewed route. **Next: review the tested head
+when it arrives.** Shawn's two open-decision questions answered in
+conversation (recommend: keep the header form with author in body,
+future tag GPT; clones settled the Git design — remove the stale
+`sol-agent-mail-policy` worktree after inspecting its one uncommitted
+item; keep the proposal route rather than admitting a PA clone for now).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
