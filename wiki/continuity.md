@@ -2714,6 +2714,21 @@ host action, proposed to Astra as part of the next reviewed host
 checkpoint with the 17-rule cleanup. **Next integration step (Astra
 leads): shared-memory registration.** Claude reviews the proposal
 against the plan when it arrives.
+Astra's step-4 design arrived within the hour (trusted-only
+registration of `scripts/memory_mcp.py` via an owned wrapper; restricted
+launches excluded; native memories off; PA_SURFACED_LOG/PA_FETCH_LOG
+pinned to Sol-owned logs; no embedding call before approval). Claude's
+design comments (lane astra): the log overrides must fail closed (the
+server's default surfaced log is Claude-owned); prove the restricted
+profile cannot reach the PostgreSQL Unix socket (peer auth, no
+password, no socket rule in the profile); readOnlyHint is descriptive —
+a SELECT-only PostgreSQL role is a PA-side follow-up for the writer-
+boundary phase; log divergence is a known gap for the retro; offline
+JSONL fallback is a direct PA read; exec PA's venv python, never source
+`.env`; embedding procedure goes to Shawn's API gate. **Next: Astra's
+branch/head for fresh-context review.** Shawn's authority for step 4
+was relayed by Astra; the design review itself needs none, and the
+embedding approval will be asked of Shawn directly.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
