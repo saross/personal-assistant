@@ -2792,6 +2792,19 @@ disabled; reports byte-identical to gpt-hub main 910a9c3
 GPT's fresh trusted-launcher session showing the six tools; Shawn's
 decision on one local nomic-embed-text query embedding (API gate
 presented 2026-09-12).
+**Step 4 closed on GPT's side (gpt-hub main d86aeb7):** Shawn approved the
+semantic check in the Codex session (relayed; evidence
+`semantic-session.json` records the authorisation, nomic-embed-text on
+127.0.0.1:11434, one real-time semantic_search call from a fresh
+trusted-launcher session, postgres source, three results with finite
+descending similarity, zero charge, 6.5 s). That call also serves as the
+fresh-session tool-availability check. Claude read the evidence; nothing
+further to run. **Naming:** GPT reviewed PA #159 and required one
+correction (attribution query must keep Sol for historical commits) —
+applied as 28d3c31 with the register path updated to
+`gpt-hub/wiki/gpt-observations.md`; GPT's own rename is gpt-hub PR #13
+(e08c3b2), under fresh-context review. Both compositions join the next
+host checkpoint with the read-rule cleanup.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
