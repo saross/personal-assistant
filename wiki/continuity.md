@@ -2782,6 +2782,16 @@ all history. Review requested from GPT; after merge, regenerate
 `~/.claude/CLAUDE.md` from the main checkout. GPT-side files proposed by
 mail; they land with the next instruction re-install. Scratchpad entry
 added (data commit above).
+**Memory host gate passed (Shawn ran the pinned block; GPT verified;
+Claude confirmed from the evidence):** retrieval 11/11 checks, five
+tool calls against PostgreSQL, zero embedding attempts; isolation: host
+controls true before/after, ENOENT on both corpus paths and EPERM on
+both socket paths inside the restricted sandbox, tools and native memory
+disabled; reports byte-identical to gpt-hub main 910a9c3
+`…/host-passed/`; PA digests match live files. **Remaining for step 4:**
+GPT's fresh trusted-launcher session showing the six tools; Shawn's
+decision on one local nomic-embed-text query embedding (API gate
+presented 2026-09-12).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
