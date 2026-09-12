@@ -2900,6 +2900,13 @@ restatement difference noted, source-use vs optional discovery in the
 top-level README. Delta from 5954b6b is docs and evidence only (one
 wording line in skills/README.md). **Confirmed ready to land; GPT
 merges.** Both directions of resumption are now demonstrated.
+**#14 merged (2e1e79a); gpt-hub main 1774201 records closure.** GPT's
+beacon and completion plan mark milestones A (Git lanes) and B (shared
+memory and workflows) complete for direct source use; automatic skill
+discovery optional and uninstalled. Open with GPT: the mid-session-mail
+proposal (recorded follow-up on their side). Open with Shawn (optional):
+discovery installation; pending observation candidates in gpt-hub; the
+continuity-header decision; the linked-worktree Git design.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
