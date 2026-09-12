@@ -1528,3 +1528,52 @@ questions check whether the premise was right.**
 **say which one I chose and why** — that is the sentence his question would have asked for, and
 volunteering it converts a later correction into an earlier one.
 
+## claude-obs 76 — 2026-09-11: I closed a row on silence at a deadline I did not control
+
+**Pattern.** At 22:00 on 8 Sept I marked Arcadia "Stage 1 unsuccessful" because the 21:59
+invitation deadline had passed with no email. The organiser's email arrived at 02:43: the round
+was postponed. Same shape as claude-obs 74 (absence read as evidence) in a third register — a
+third-party deadline. The calendar note I had written myself said "if nothing by Wednesday
+morning", and I resolved it Tuesday night anyway.
+**Lesson.** A missed deadline that someone else owns is a *fact about them*, not a verdict on
+the outcome. "No word by X" is the only honest record until the owner speaks.
+**How to apply.** Waiting-for rows reaching their date get "date passed, no reply + chase",
+never a resolution, unless the resolution comes from the counterparty.
+
+## claude-obs 77 — 2026-09-11: every channel claim I made about the selling board was wrong, and Shawn's evidence was one sentence
+
+**Pattern.** I had Marketplace as the stronger channel and Gumtree as an older audience; I
+told Shawn to post the sale ad on a Marketplace garage-sale type that does not exist in
+Australia. His evidence: six of seven sales from Gumtree on listings posted to both, buyers
+aged 30 to late-50s, and the three listing types actually on screen. None of my claims had a
+source; all read as advice.
+**Lesson.** Advice about a marketplace's features or demographics is a *specific* and falls
+under the anti-confabulation rule like any other specific. If I have not seen the screen or the
+data this month, say "check" rather than "use".
+**How to apply.** For platform features, name the uncertainty ("Marketplace used to have…,
+check whether it still does"). For channel performance, read `selling-channels.md`'s evidence
+section first; it now holds the attested ranking.
+
+## claude-obs 78 — 2026-09-11: Shawn named the mechanism of a six-day slip before I could call it avoidance
+
+**Pattern.** Cot and fridge slipped six days. Each day had a reasonable displacement, and by
+Thursday I was preparing to press. Shawn pre-empted it at the recap: the real cause was not
+wanting to break a productive three-project rotation to go and dig a cot out of the garage. He
+then set the fix himself — physical task before the first computer block.
+**Lesson.** The confrontational register works best when it is *handed* something to
+confront. His self-diagnosis was more precise than my "pattern, not a slip" would have been,
+and it produced a rule rather than a defence.
+**How to apply.** When a slip has accumulated, ask "what is the mechanism?" before naming one.
+Record the answer as a scratchpad principle when it generalises (it did).
+
+## claude-obs 79 — 2026-09-11: I quoted a subagent's figures as if I had checked them
+
+**Pattern.** Tuesday's register calibration was run by an agent; I reported its pair count,
+length ratio, and deletion categories to Shawn from the agent's summary, then read the report
+file only afterwards. The figures were right. That is luck, not a check — the 2026-07-06 craft
+entry puts subagent-relayed specifics at roughly one in ten wrong.
+**Lesson.** The agent's return message is a map; the file it wrote is the territory. Numbers go
+to Shawn from the file.
+**How to apply.** Before relaying any count or ratio from an agent, open the artefact and read
+the line it came from. Say "from the file" when asked.
+
