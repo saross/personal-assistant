@@ -1962,7 +1962,7 @@ class TestComposerDryRun:
 
 
 class TestComposerWritesNowhereElse:
-    """ET10 — nothing stopped the script writing a Sol-owned surface."""
+    """ET10 — nothing stopped the script writing a GPT-owned surface."""
 
     def test_only_the_target_is_created_under_home(
         self, compose_sandbox: dict[str, Path]
@@ -1979,7 +1979,7 @@ class TestComposerWritesNowhereElse:
     def test_no_codex_or_agents_file_is_touched(
         self, compose_sandbox: dict[str, Path]
     ) -> None:
-        """The Sol-owned surfaces named in the header stay absent."""
+        """The GPT-owned surfaces named in the header stay absent."""
         _run_compose(compose_sandbox)
 
         home = compose_sandbox["home"]

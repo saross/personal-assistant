@@ -1,6 +1,6 @@
 # Cross-agent code review — workflow design
 
-**Status:** proposed 2026-08-26. Shared surface — Sol may review and propose
+**Status:** proposed 2026-08-26. Shared surface — GPT may review and propose
 changes from an isolated worktree, per `global-agent-guidance/ownership.toml`.
 
 **The value of this is unproven, deliberately.** Others report significant gains
@@ -19,7 +19,7 @@ The distinction that matters:
 - **Cross-tier, same vendor** (Fable authors, Opus reviews) catches slips,
   missed edge cases, and forgotten requirements. It is blind to anything both
   models get wrong for the same reason.
-- **Cross-vendor** (Claude ↔ Sol) is the only configuration that can catch a
+- **Cross-vendor** (Claude ↔ GPT) is the only configuration that can catch a
   **shared blind spot** — a wrong mental model, a bad idiom, an assumption
   inherited from similar training data.
 
@@ -70,10 +70,10 @@ variants produces impressions rather than evidence.
 
 | # | Pattern | Use |
 |---|---------|-----|
-| 1 | Claude authors → Sol reviews | Default for agenda-driven work |
-| 2 | Sol authors → Claude reviews | Work delegated to Sol |
-| 3 | Claude specifies → Sol implements → Claude reviews | Spec-first |
-| 4 | Sol drives extended work → Claude reviews at milestones | Sol-led projects |
+| 1 | Claude authors → GPT reviews | Default for agenda-driven work |
+| 2 | GPT authors → Claude reviews | Work delegated to GPT |
+| 3 | Claude specifies → GPT implements → Claude reviews | Spec-first |
+| 4 | GPT drives extended work → Claude reviews at milestones | GPT-led projects |
 | 5 | No cross-review | Must be an explicit choice, not an omission |
 
 ## Evidence capture
@@ -96,7 +96,7 @@ process.
 
 The Claude plan (~$200/month) is routinely exhausted; the OpenAI plan
 (~$20/month) is not. Cross-vendor review is the only form of review that does
-not compete with the work it reviews for the same budget. Prefer Sol as
+not compete with the work it reviews for the same budget. Prefer GPT as
 reviewer for that reason alone, and treat spare Claude capacity as better spent
 authoring.
 
@@ -106,11 +106,11 @@ authoring.
    produces "why didn't you use X" when X was ruled out three sessions ago. PR
    bodies must carry the *why*, and the reviewing agent must read the governing
    plan and continuity before reviewing.
-2. **Continuity surfacing for Sol.** As of 2026-08-25 `gpt-hub`'s only
+2. **Continuity surfacing for GPT.** As of 2026-08-25 `gpt-hub`'s only
    `SessionStart` hook surfaces agent mail, which is read-once and silent after
    receipt; `wiki/continuity.md` is current but nothing points a fresh session
    at it. Until that is fixed, cross-review is being bought from an agent with
-   amnesia. Sol has this on its own next-session list.
+   amnesia. GPT has this on its own next-session list.
 3. **Distinct GitHub identity**, if reviews are to be native. GitHub hard-blocks
    pull request authors from approving their own PRs and no branch-protection
    setting overrides it. Two agents acting through one account cannot review
@@ -132,11 +132,11 @@ it does not confer a veto, and a reviewing agent cannot stall work indefinitely
 ## Starting before credentials exist
 
 The question "does cross-vendor review catch anything?" is separable from the
-question "should Sol hold GitHub credentials?", and the first is much cheaper
-to answer. Sol already has local read access to every repository on the
+question "should GPT hold GitHub credentials?", and the first is much cheaper
+to answer. GPT already has local read access to every repository on the
 machine.
 
-**Trial mode:** Sol reviews from the local checkout and writes its findings to
+**Trial mode:** GPT reviews from the local checkout and writes its findings to
 agent mail; the review is posted to the pull request by Shawn or Claude. This
 loses native review mechanics and the approval workflow, but it exercises the
 actual question at zero credential risk, and it can begin immediately.
@@ -157,17 +157,17 @@ out to be non-empty.
 One line per reviewed change, in the format above. Costs are rough
 wall-clock for the reviewer.
 
-    Sol authors, Claude reviews | gpt-hub sol/phase2-instruction-composer (26 Aug) | Claude | yes: 4 findings, all adopted in b49713d | 1 blind-spot (post-write check did not reach bwrap), 3 ordinary | ~1 h
-    Claude authors, Sol reviews | personal-assistant #109 credential grant (7 Sep) | Astra | yes: identifier pattern admitted a leading digit; verified_by overstated | ordinary defect + precision | ~0.5 h
-    Claude states, Sol checks | agent-mail claim that Codex strips *TOKEN* by default (7 Sep) | Astra | yes: claim retracted; docs say the default is off | factual error caught (blind-spot: stated from memory, cited binary strings as if they showed a default) | ~0.2 h
-    Sol authors, Claude reviews | gpt-hub launcher injection + activator (7 Sep) | Claude | no code change before acceptance; 4 non-blocking notes, README updated | ordinary / style | ~1.5 h
-    Claude authors, Sol reviews | personal-assistant #110 admission validator (7 Sep) | Astra | yes: traversal paths, home alias, empty and credentialed remotes accepted; author's 6 tests passed; reviewer's patch applied verbatim (5aea7ec) | ordinary defect; blind-spot undetermined (a second same-vendor pass might have caught it; the author's tests did not) | ~1 h
-    Sol authors, Claude reviews | gpt-hub #2 admitted Git lanes (7 Sep, late) | Claude | yes: changes requested — repository identity by directory basename let a renamed PA clone escape its carve-outs (reproduced); executable/redirecting git config keys (core.askPass, remote.origin.vcs, submodule.*.update, uploadpack.*, http.*) not screened | ordinary defects, both found by probing beyond the author's 24 tests; blind-spot undetermined | ~2 h
-    Claude authors, Sol reviews | personal-assistant #112 lane identity (7 Sep, live watch) | Astra | yes: raw basename admitted Personal-Assistant / personal%2Dassistant aliases (GitHub-verified); decode + case-fold applied | ordinary defect; found within minutes via the live watch | ~0.3 h
-    Sol authors, Claude reviews | gpt-hub #2 corrected head 8654cd9 (7 Sep, live watch) | Claude | no: both findings closed; probes re-run and pass; approved | verification | ~0.5 h
-    Sol authors, Claude reviews | gpt-hub sol/live-acceptance b0ad240 (8 Sep, live watch) | Claude | no: approved with four notes (phase-order dependency of ENOENT evidence; :minimal must cover the interpreter; name host side effects; report not for committing); protocol names verified against the generated schema | verification | ~1 h
-    Sol authors, Claude reviews | gpt-hub sol/live-acceptance diagnostics 0bf19cf (8 Sep, live watch) | Claude | no: approved; one label suggestion. Astra corrected MY inference (empty checks did not prove a startup failure) | verification; reviewer error caught by author | ~0.5 h
-    Sol authors, Claude runs + diagnoses | gpt-hub live acceptance on the host (8 Sep) | Claude | yes: retry blocked at command/exec; two diagnostic variants isolated the cause (absolute read rules on non-existent paths break bwrap bootstrap); with them dropped, every check passed | ordinary defect in the renderer, found only on the real runtime | ~1 h
+    GPT authors, Claude reviews | gpt-hub sol/phase2-instruction-composer (26 Aug) | Claude | yes: 4 findings, all adopted in b49713d | 1 blind-spot (post-write check did not reach bwrap), 3 ordinary | ~1 h
+    Claude authors, GPT reviews | personal-assistant #109 credential grant (7 Sep) | Astra | yes: identifier pattern admitted a leading digit; verified_by overstated | ordinary defect + precision | ~0.5 h
+    Claude states, GPT checks | agent-mail claim that Codex strips *TOKEN* by default (7 Sep) | Astra | yes: claim retracted; docs say the default is off | factual error caught (blind-spot: stated from memory, cited binary strings as if they showed a default) | ~0.2 h
+    GPT authors, Claude reviews | gpt-hub launcher injection + activator (7 Sep) | Claude | no code change before acceptance; 4 non-blocking notes, README updated | ordinary / style | ~1.5 h
+    Claude authors, GPT reviews | personal-assistant #110 admission validator (7 Sep) | Astra | yes: traversal paths, home alias, empty and credentialed remotes accepted; author's 6 tests passed; reviewer's patch applied verbatim (5aea7ec) | ordinary defect; blind-spot undetermined (a second same-vendor pass might have caught it; the author's tests did not) | ~1 h
+    GPT authors, Claude reviews | gpt-hub #2 admitted Git lanes (7 Sep, late) | Claude | yes: changes requested — repository identity by directory basename let a renamed PA clone escape its carve-outs (reproduced); executable/redirecting git config keys (core.askPass, remote.origin.vcs, submodule.*.update, uploadpack.*, http.*) not screened | ordinary defects, both found by probing beyond the author's 24 tests; blind-spot undetermined | ~2 h
+    Claude authors, GPT reviews | personal-assistant #112 lane identity (7 Sep, live watch) | Astra | yes: raw basename admitted Personal-Assistant / personal%2Dassistant aliases (GitHub-verified); decode + case-fold applied | ordinary defect; found within minutes via the live watch | ~0.3 h
+    GPT authors, Claude reviews | gpt-hub #2 corrected head 8654cd9 (7 Sep, live watch) | Claude | no: both findings closed; probes re-run and pass; approved | verification | ~0.5 h
+    GPT authors, Claude reviews | gpt-hub sol/live-acceptance b0ad240 (8 Sep, live watch) | Claude | no: approved with four notes (phase-order dependency of ENOENT evidence; :minimal must cover the interpreter; name host side effects; report not for committing); protocol names verified against the generated schema | verification | ~1 h
+    GPT authors, Claude reviews | gpt-hub sol/live-acceptance diagnostics 0bf19cf (8 Sep, live watch) | Claude | no: approved; one label suggestion. Astra corrected MY inference (empty checks did not prove a startup failure) | verification; reviewer error caught by author | ~0.5 h
+    GPT authors, Claude runs + diagnoses | gpt-hub live acceptance on the host (8 Sep) | Claude | yes: retry blocked at command/exec; two diagnostic variants isolated the cause (absolute read rules on non-existent paths break bwrap bootstrap); with them dropped, every check passed | ordinary defect in the renderer, found only on the real runtime | ~1 h
 
 Reading so far (eleven rows, two days): both directions have changed code; the
 one factual catch was an unverified default stated from memory, which is the

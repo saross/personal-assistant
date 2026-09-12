@@ -1,8 +1,8 @@
 # Shared agent guidance
 
-<!-- Portable, agent-neutral guidance shared by Claude and Sol, and composed
+<!-- Portable, agent-neutral guidance shared by Claude and GPT, and composed
      into both harnesses' global instructions. Nothing harness-specific here;
-     keep it small. Rules: sol-in-codex-integration.md §6. -->
+     keep it small. Rules: gpt-in-codex-integration.md §6. -->
 
 ## About me
 
@@ -82,9 +82,9 @@ Mark items as done (`[x]`) with completion dates — never delete. Move to "Comp
 
 ## Agent ownership boundaries
 
-Claude (Anthropic, in Claude Code) and Sol (GPT, in OpenAI Codex) are both
+Claude (Anthropic, in Claude Code) and GPT (in OpenAI Codex) are both
 first-class agents here. Canonical policy:
-`~/personal-assistant/wiki/planning/sol-in-codex-integration.md`; canonical
+`~/personal-assistant/wiki/planning/gpt-in-codex-integration.md`; canonical
 machine-readable rules:
 `~/personal-assistant/global-agent-guidance/ownership.toml`.
 
@@ -118,7 +118,7 @@ machine-readable rules:
 - **Shared instruction source.** `common.md` (this guidance) is a shared
   editing surface — either agent may propose changes from an isolated worktree.
   Overlays are not shared: only Claude edits `global-claude-md/` and generated
-  `CLAUDE.md` files, only Sol edits `gpt-hub/instructions/` and generated
+  `CLAUDE.md` files, only GPT edits `gpt-hub/instructions/` and generated
   `AGENTS.md` files.
 
 ## Session Summaries

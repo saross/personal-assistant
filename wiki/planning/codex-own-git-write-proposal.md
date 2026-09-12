@@ -1,12 +1,12 @@
 # Proposal — grant Codex write to its own repository's Git directory
 
-**Status:** proposed by Sol, verified and patched by Claude 2026-08-25.
-Awaiting application by Sol or Shawn — `~/gpt-hub/` is Sol-owned and
+**Status:** proposed by GPT, verified and patched by Claude 2026-08-25.
+Awaiting application by GPT or Shawn — `~/gpt-hub/` is GPT-owned and
 write-denied to Claude, so this is the proposal route, not an applied change.
 
 ## Problem
 
-`git add` in `gpt-hub` fails read-only for Sol, under both normal and
+`git add` in `gpt-hub` fails read-only for GPT, under both normal and
 escalated permissions. The underlying filesystem permissions are `rw`; the
 `personal-trusted` profile extends `:workspace`, and that preset marks `.git`
 inside a writable workspace root read-only so an agent cannot rewrite hooks or
@@ -44,13 +44,13 @@ Rendered output changes by exactly one line in
 ## Ownership assessment
 
 **No `ownership.toml` loosening PR is required, and Claude concurs.** `gpt-hub`
-is Sol's `home_repository` under the active policy, and staging and committing
-are writes to a surface Sol already owns. The change makes the machine profile
+is GPT's `home_repository` under the active policy, and staging and committing
+are writes to a surface GPT already owns. The change makes the machine profile
 match the policy rather than extending it. It touches no Claude-owned path.
 
 ## Known limitation — this probably does not fix the reported symptom
 
-Sol's own integration record
+GPT's own integration record
 (`gpt-hub/integration-records/2026-08-25-agent-mail.md`) locates the failure in
 **linked worktrees**, not the main checkout: "its workspace roots do not grant
 the parent repositories' linked-worktree Git metadata. Exact-path staging
@@ -70,12 +70,12 @@ Two consequences:
    `/home/shawn/personal-assistant/.git/worktrees/...`, which is **outside** the
    grant by design — that is Claude's repository, and granting it would be a
    real ownership loosening needing Shawn's sign-off. This half remains the
-   "separate adjudication" Sol's record already flagged.
+   "separate adjudication" GPT's record already flagged.
 
 **Test order therefore matters:** verify `git add` in `~/gpt-hub` first (this
 should work), then in `~/worktrees/gpt-hub/sol-agent-mail-codex` (this is the
 one at risk from #27418). If the worktree case still fails, the fix is not the
-profile — it is upstream, and the fallback options Sol already named stand: an
+profile — it is upstream, and the fallback options GPT already named stand: an
 isolated clone, or a mediated Git operation that enforces the active worktree,
 branch, and staged-path census.
 

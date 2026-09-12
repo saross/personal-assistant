@@ -1,16 +1,24 @@
 ---
-title: "Sol-in-Codex — integration plan"
+title: "GPT-in-Codex — integration plan"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-20
 updated: 2026-08-22
 status: approved for phased implementation
 ---
 
-# Sol-in-Codex — integration plan
+# GPT-in-Codex — integration plan
+
+> **Naming (2026-09-12).** The Codex-side agent was called "Sol" until
+> 2026-09-12 and is now referred to as "GPT" in prose. Identifiers that
+> would break on rename keep the old form: the `sol/*` branch namespace,
+> lane and worktree paths under `~/worktrees/<repo>/sol-<workstream>`, the
+> `name = "Sol"` field in `ownership.toml` (it derives that prefix), rule
+> ids such as `claude-sol-home`, and historical records. Older documents,
+> mail, and continuity entries say "Sol" and mean the same agent.
 
 ## Purpose and authority
 
-Make **Sol** (GPT, running in OpenAI Codex) a first-class agent in Shawn's
+Make **GPT** (GPT, running in OpenAI Codex) a first-class agent in Shawn's
 infrastructure, with full participation in substantive work, durable continuity,
 access to the shared memory and wiki systems, and its own agent-owned home.
 
@@ -25,11 +33,11 @@ The design has four goals:
 
 Shawn's Claude quota was the immediate driver, but this is not a mechanical-work
 offload. Work should be routed by context, tool fit, verification needs, and
-available capacity. Sol may own substantive technical, methodological,
+available capacity. GPT may own substantive technical, methodological,
 evaluative, research, and implementation work.
 
 **Authority.** Sections 1–10 are the current plan. They integrate Shawn's
-rulings and the Sol and Fable reviews of 2026-08-20–22. Earlier formulations
+rulings and the GPT and Fable reviews of 2026-08-20–22. Earlier formulations
 remain available through Git; superseded rules are not retained inline because
 contradictory instructions are unsafe for humans and agents alike.
 
@@ -37,25 +45,25 @@ contradictory instructions are unsafe for humans and agents alike.
 
 ## 1. Ratified decisions
 
-1. **Read access is broad and reciprocal.** Sol may read all of
+1. **Read access is broad and reciprocal.** GPT may read all of
    `personal-assistant`, including the private `data/` submodule. Claude may
    read all of `gpt-hub`. There are no secrets *between the agents*.
-2. **Harness-specific files have one writer.** Sol does not edit Claude-specific
+2. **Harness-specific files have one writer.** GPT does not edit Claude-specific
    configuration or instruction surfaces, including `CLAUDE.md`. Claude does
    not edit Codex-specific surfaces, including `AGENTS.md` and `.codex/`.
 3. **The personal-assistant function remains Claude-owned.** Claude runs and
    updates standups, personal task tracking, time tracking, recaps, weekly
-   reviews, retrospectives, and their operational records. Sol may read these
+   reviews, retrospectives, and their operational records. GPT may read these
    and propose changes, but does not operate them.
-4. **`gpt-hub` is Sol's home and agent-owned repository.** It holds Codex
-   configuration sources, adapted skills and hooks, Sol's observations,
+4. **`gpt-hub` is GPT's home and agent-owned repository.** It holds Codex
+   configuration sources, adapted skills and hooks, GPT's observations,
    cross-repository tools, and integration records. Claude has read and
    proposal access, but does not modify or commit to it.
 5. **Ordinary project work is shared.** Both agents may edit code,
    documentation, research records, continuity, and working notes in project
    repositories, subject to the repository's own branch, review, and
    verification rules.
-6. **Cross-agent work always uses isolated worktrees.** Claude and Sol do not
+6. **Cross-agent work always uses isolated worktrees.** Claude and GPT do not
    work concurrently in one checkout; each cross-agent workstream gets its own
    checkout, index, `HEAD`, and branch. Same-agent concurrency is governed by
    the scoped rule in §3 (ruled 2026-08-22).
@@ -63,12 +71,12 @@ contradictory instructions are unsafe for humans and agents alike.
    stewardship and input provenance, not collaborator count. FAIMS is a trusted
    repository, while still requiring its normal branch-and-review discipline.
 8. **Memory maintenance stays with Claude for now.** This is an expedient, not a
-   permanent judgement about capability. Sol does not directly mutate the live
+   permanent judgement about capability. GPT does not directly mutate the live
    memory corpus during the first integration phase.
 9. **All future online memory writers converge on one write boundary.** The
-   service must eventually absorb Claude's and Sol's write paths. Routing only
-   Sol through it would not remove the existing concurrency class.
-10. **Agent attribution uses one Git convention.** Sol uses a
+   service must eventually absorb Claude's and GPT's write paths. Routing only
+   GPT through it would not remove the existing concurrency class.
+10. **Agent attribution uses one Git convention.** GPT uses a
     `Co-Authored-By` trailer with a Shawn-controlled email alias. No fabricated
     OpenAI address will be used.
 
@@ -89,7 +97,7 @@ contradictory instructions are unsafe for humans and agents alike.
 
 ### Claude-owned surfaces
 
-Sol has read and proposal-only access to:
+GPT has read and proposal-only access to:
 
 - global and repository-local `CLAUDE.md` and `.claude/`;
 - Claude settings, hooks, agents, commands, skills, output styles, and
@@ -100,20 +108,20 @@ Sol has read and proposal-only access to:
 - `claude-observations.md`; and
 - live memory-maintenance operations during the initial integration phase.
 
-Sol may identify defects and draft exact changes to these surfaces. The draft
+GPT may identify defects and draft exact changes to these surfaces. The draft
 lands in `gpt-hub`, a shared planning document, or the current conversation;
 Claude or Shawn applies it.
 
-### Sol-owned surfaces
+### GPT-owned surfaces
 
 Claude has read and proposal-only access to:
 
 - global and repository-local `AGENTS.md` and `.codex/`;
 - Codex configuration, hooks, skills, plugins, and agent definitions;
 - all files in `gpt-hub`, including `sol-observations.md`; and
-- scripts whose sole purpose is installing or operating Sol's environment.
+- scripts whose sole purpose is installing or operating GPT's environment.
 
-Claude may review and propose exact changes. Sol or Shawn applies them.
+Claude may review and propose exact changes. GPT or Shawn applies them.
 
 ### Shawn-owned or gated surfaces
 
@@ -122,7 +130,7 @@ Claude may review and propose exact changes. Sol or Shawn applies them.
   status.
 - Credentials, account settings, external publication, and destructive live
   operations always remain subject to Shawn's explicit authority.
-- The exact Sol email alias is supplied by Shawn before the attribution rule is
+- The exact GPT email alias is supplied by Shawn before the attribution rule is
   activated.
 
 ### Shared surfaces
@@ -139,7 +147,7 @@ Both agents may edit, in isolated worktrees:
 Within `personal-assistant`, this means the repository is **not** globally
 Claude-only. Its personal-assistant operations and Claude harness are
 Claude-owned, while neutral planning, testing, and explicitly assigned
-infrastructure work may be shared. Sol uses a dedicated PA worktree for any
+infrastructure work may be shared. GPT uses a dedicated PA worktree for any
 authorised edit and never Claude's live checkout.
 
 ---
@@ -171,7 +179,7 @@ or semantic merge conflicts. Before every commit:
 
 ### Scope of the worktree rule (ruled 2026-08-22)
 
-- **Cross-agent (Claude × Sol): worktrees always.** Permanent simultaneity
+- **Cross-agent (Claude × GPT): worktrees always.** Permanent simultaneity
   across two harnesses with no shared session awareness admits no exception.
 - **Same-agent, project repositories: worktrees by default** for substantive
   parallel workstreams. They are cheap where no hooks or submodules are
@@ -196,7 +204,7 @@ metadata lives under the primary checkout's `.git/worktrees/<lane>`, which the
 profile keeps read-only, and an explicit grant on the parent `.git` does not
 help (openai/codex#27418; readiness review 2026-09-07). A credential does not
 change this. Shawn approved the following exception to the worktree rule on
-2026-09-07, on Sol's proposal
+2026-09-07, on GPT's proposal
 (`gpt-hub/integration-records/2026-09-07-git-lane-proposal.md`) and Claude's
 review.
 
@@ -234,7 +242,7 @@ review.
   existing linked worktree is replaced by an admitted clone only after this
   passes, in its own admission PR. Storage cost is measured on the pilot
   before any second lane.
-- **Division.** Claude owns the policy schema and its verifier; Sol owns
+- **Division.** Claude owns the policy schema and its verifier; GPT owns
   renderer discovery, the lane grant, and the acceptance run in `gpt-hub`.
 
 ### Ownership guardrails
@@ -265,7 +273,7 @@ the lighter controls are inadequate.
   agents' deny lists and is the single source both enforcement layers derive
   from.
 - Changes to it always go branch + pull request, reviewed by the other party:
-  Sol reviews Claude-authored changes and vice versa; Shawn may author,
+  GPT reviews Claude-authored changes and vice versa; Shawn may author,
   reviewed by either agent. On disagreement, the agents attempt consensus;
   anything unresolved goes to Shawn.
 - Asymmetry: a change that **loosens** a boundary (expands a write surface,
@@ -275,7 +283,7 @@ the lighter controls are inadequate.
 - The ownership-policy test **reads `ownership.toml`** and attempts the
   operations it declares denied, so the file is a checked source rather than
   a description that can drift from the machine-local enforcement (Claude's
-  rules live in gitignored `settings.json`; Sol's in Codex configuration).
+  rules live in gitignored `settings.json`; GPT's in Codex configuration).
 - This gate is behavioural — Git cannot branch-protect a single path in a
   direct-push repository — consistent with the guardrails stance above.
   Revisit if anyone is unhappy with it after a few weeks of operation.
@@ -341,7 +349,7 @@ behavioural controls are inadequate.
   while the harness denies credential-file reads. Codex mirrors that denial at
   the OS and hook layers and receives any future allow-listed values only from
   its launcher.
-- Sol currently holds no API credential access, and none is needed in the
+- GPT currently holds no API credential access, and none is needed in the
   current phases. When a need arises, access is granted per service through
   the trust-profile launcher (§9.3): the personal/trusted profile is
   launched with a filtered subset of `.env` injected as environment
@@ -350,7 +358,7 @@ behavioural controls are inadequate.
   a grant is a loosening, so Shawn signs off. The restricted-input profile
   never receives credentials, closing the injection-exfiltration channel where
   untrusted content is processed.
-- `personal-assistant/.env*` is also write-denied for Sol. The launcher parses
+- `personal-assistant/.env*` is also write-denied for GPT. The launcher parses
   the file without shell-sourcing it and never emits values: malformed
   variable names have caused shell sourcing to echo credential-bearing lines
   to stderr in two real incidents (2026-05-22 and 2026-07-27). After any
@@ -369,7 +377,7 @@ behavioural controls are inadequate.
   differ, because Claude's hooks shell-source `.env` and a variable literally
   named `GH_TOKEN` there would silently override Shawn's keyring-backed `gh`
   login in every hook. Adding the grant is a loosening, so it lands only with
-  Shawn's sign-off after Sol's review. Implementation constraints for the
+  Shawn's sign-off after GPT's review. Implementation constraints for the
   launcher are in the grant record and the accompanying agent-mail proposal;
   the token is verified by `scripts/check-credentials.py`, which now reports
   each GitHub token's account, kind, expiry, and push access to `gpt-hub`.
@@ -377,11 +385,11 @@ behavioural controls are inadequate.
   2026-09-07).** Consequence, stated plainly: the token acts as Shawn's own
   account, so nothing on GitHub can tell a Codex push from Shawn's, and PA
   has no branch protection. The local guardrails still hold inside the
-  sandbox (Claude-owned PA paths are read-only in every Sol lane, and the
+  sandbox (Claude-owned PA paths are read-only in every GPT lane, and the
   Git-lane renderer must carry those carve-outs into any admitted clone),
   but between an admitted PA clone and PA `main` the only barrier is the
   norm: PA changes from Codex go branch + PR, never a direct push to `main`
-  (`ownership.toml` change control; Sol's instructions). **Detection layer
+  (`ownership.toml` change control; GPT's instructions). **Detection layer
   built the same day:** `hooks/session-start-codex-main-tripwire.py`, a
   SessionStart hook on amd-tower and zbook, flags any non-merge commit on
   the first-parent chain of PA `main` since the ruling that carries a Codex
@@ -392,7 +400,7 @@ behavioural controls are inadequate.
   Silent when clean; a reviewed hit is silenced with `--ack <sha>`. A
   tripwire, not a control: trailers and dates are forgeable.
 - **Zero-byte `CLAUDE.md` and `.claude` inside Codex workspace roots** (seen
-  in `~/gpt-hub` and a Sol worktree) are Codex's own synthetic bubblewrap
+  in `~/gpt-hub` and a GPT worktree) are Codex's own synthetic bubblewrap
   mount targets: placeholders for workspace-relative read-only rules on
   files that do not exist there, created at sandbox bootstrap and removed
   on clean exit, left behind when a sandbox dies (registry:
@@ -418,7 +426,7 @@ The existing `scripts/memory_mcp.py` is a six-tool, read-only MCP server using
 
 Codex supports both local `stdio` and remote streamable-HTTP MCP servers.
 Register the current server read-only during the first implementation slice.
-In trusted contexts, Sol may also read PA files directly when a document or raw
+In trusted contexts, GPT may also read PA files directly when a document or raw
 record is the authoritative source. MCP is a convenient retrieval interface,
 not a mandatory read-side security boundary.
 
@@ -431,11 +439,11 @@ remains canonical, avoiding two competing recall systems.
 
 ### Current write path
 
-Claude continues routine live-memory maintenance during the first phase. Sol
+Claude continues routine live-memory maintenance during the first phase. GPT
 does not directly append, rewrite, archive, backfill, or reconcile operational
 memory data.
 
-This restriction applies to **data mutation**, not to capability. Sol may
+This restriction applies to **data mutation**, not to capability. GPT may
 review or, when explicitly assigned, implement and test memory-service code in
 an isolated PA worktree. Tests use fixtures or temporary stores, never the live
 corpus without a separate operational approval.
@@ -446,7 +454,7 @@ An MCP module does not by itself serialise writes: separate clients can spawn
 separate `stdio` processes. The future write architecture must supply one
 actual concurrency boundary across agents and machines.
 
-Before exposing any Sol write tool:
+Before exposing any GPT write tool:
 
 1. inventory every direct corpus mutator, not only the extraction hook and
    `/recap`;
@@ -497,7 +505,7 @@ entries to `wiki/handoffs/` and retain `wiki/continuity.md` as a short
 current-state index.
 
 PA continuity is part of the Claude-owned personal-assistant function.
-`gpt-hub` continuity is Sol-owned. Each agent may read the other and propose a
+`gpt-hub` continuity is GPT-owned. Each agent may read the other and propose a
 correction.
 
 ### Observations
@@ -508,9 +516,9 @@ Keep one register per voice and direction:
   Shawn;
 - PA `user-observations.md`: Shawn's observations about Claude, maintained
   through the existing gated ritual;
-- `gpt-hub/wiki/sol-observations.md`: Sol-owned observations about working with
+- `gpt-hub/wiki/sol-observations.md`: GPT-owned observations about working with
   Shawn; and
-- `gpt-hub/wiki/user-observations.md`: Shawn's observations about Sol, with a
+- `gpt-hub/wiki/user-observations.md`: Shawn's observations about GPT, with a
   parallel gated ritual.
 
 Project `wiki/working-notes.md` remains shared. Use one numbered observation
@@ -519,9 +527,9 @@ remain unambiguous.
 
 ### Personal-assistant records
 
-Sol may use standups, focus state, reports, retrospectives, and time logs as
-context. Sol does not run their rituals or update their records. If project work
-reveals a task, time entry, or personal-assistant correction, Sol records a
+GPT may use standups, focus state, reports, retrospectives, and time logs as
+context. GPT does not run their rituals or update their records. If project work
+reveals a task, time entry, or personal-assistant correction, GPT records a
 proposal in project continuity or `gpt-hub`; Claude incorporates it during the
 appropriate PA ritual.
 
@@ -542,8 +550,8 @@ personal-assistant/global-claude-md/
 └── supporting references     # Claude-owned
 
 gpt-hub/instructions/
-├── codex.md                   # Sol-owned overlay
-└── supporting references     # Sol-owned
+├── codex.md                   # GPT-owned overlay
+└── supporting references     # GPT-owned
 ```
 
 Private machine details should remain in the appropriate agent-owned local
@@ -559,19 +567,19 @@ layout above is the current state, not a target. `shared.md` is archived at
 `archive/global-claude-md/shared.md` with a README recording the mapping. The
 split is verbatim apart from five wordings that de-Claude-ify portable
 sections and the ownership section, which was rewritten because its original
-phrasing was Claude-first and would have read backwards in Sol's
-instructions. The Codex composer/installer remains Sol's to build.
+phrasing was Claude-first and would have read backwards in GPT's
+instructions. The Codex composer/installer remains GPT's to build.
 
 ### Composition and ownership
 
 - PA's composer writes only `~/.claude/CLAUDE.md` from the portable common
   source plus Claude-owned overlays.
 - A `gpt-hub` installer writes only `~/.codex/AGENTS.md` from the same portable
-  source plus Sol-owned overlays.
+  source plus GPT-owned overlays.
 - Neither composer writes the other harness's output.
 - Both agents may edit the portable common source from isolated worktrees.
 - Only Claude edits Claude overlays and generated `CLAUDE.md` files.
-- Only Sol edits Codex overlays and generated `AGENTS.md` files.
+- Only GPT edits Codex overlays and generated `AGENTS.md` files.
 
 Repository-local instruction files follow the same boundary. Put genuinely
 shared project policy in ordinary documentation where both agents may edit it;
@@ -607,7 +615,7 @@ it spends the headroom that keeps truncation from reaching real instructions.
 
 **Why 14 KiB, and why the earlier 8 KiB is retired.** The original 8 KiB
 target was set at ratification (`594c2b7`) before anyone measured the portable
-core; Sol's capability review had said only that the generated `AGENTS.md`
+core; GPT's capability review had said only that the generated `AGENTS.md`
 should be under 32 KiB. Measured afterwards, the extracted portable source is
 11,264 bytes on its own, so 8 KiB was never reachable without cutting rules.
 The revised figure is set from what the chain actually costs on this machine:
@@ -661,7 +669,7 @@ durable queue receipt; a separate worker performs expensive processing.
 
 Route by the needs of the task:
 
-- **Sol/Codex:** repository-native implementation, debugging, tests,
+- **GPT/Codex:** repository-native implementation, debugging, tests,
   long-running execution, evaluation design, technical and methodological
   reasoning, and independent review;
 - **Claude:** the established PA rituals and, for now, live memory maintenance;
@@ -683,7 +691,7 @@ latency, failure, and rework evidence.
 Repository state and task inputs determine discipline; this document is not a
 permanent allow-list.
 
-- **`gpt-hub`:** Sol-owned; Claude read and proposal-only.
+- **`gpt-hub`:** GPT-owned; Claude read and proposal-only.
 - **`personal-assistant`:** capability-specific ownership from §2; PA
   operations and Claude configuration are Claude-owned, while authorised
   neutral engineering and planning may be shared.
@@ -698,20 +706,20 @@ permanent allow-list.
 
 ### Attribution
 
-Shawn remains the configured Git author. Material Sol assistance uses:
+Shawn remains the configured Git author. Material GPT assistance uses:
 
 ```text
-Co-Authored-By: Sol (OpenAI Codex) <shawn@faims.edu.au>
+Co-Authored-By: GPT (OpenAI Codex) <shawn@faims.edu.au>
 ```
 
 This canonical string uses Shawn's configured primary Git address. Record the
-final Claude and Sol trailer strings in
+final Claude and GPT trailer strings in
 `global-claude-md/git-reference.md` and the Codex equivalent.
 
 Do not encode a changing model identifier in hand-authored Git identities.
 Claude's harness-supplied trailer is model-versioned
 (`Co-Authored-By: Claude <model> <noreply@anthropic.com>`) and remains as the
-harness emits it; attribution queries key on `Co-Authored-By:.*(Claude|Sol)`,
+harness emits it; attribution queries key on `Co-Authored-By:.*(Claude|GPT)`,
 which is stable across model versions. Experiments and evaluations record
 agent persona, harness, model, reasoning effort, temperature, run identifier,
 and operational metrics in their manifests.
@@ -792,10 +800,10 @@ These do not reopen the ratified architecture:
 
 Rewrite and commit this document so §§1–10 contain one current policy.
 
-**Exit:** the original Opus draft and the Sol and Fable reviews are integrated;
+**Exit:** the original Opus draft and the GPT and Fable reviews are integrated;
 superseded prose remains available through Git, not inline.
 
-### Phase 1 — establish Sol's home and ownership policy
+### Phase 1 — establish GPT's home and ownership policy
 
 Create `gpt-hub`, its wiki registers, instruction/skill directories, and the
 machine-readable ownership policy at `global-agent-guidance/ownership.toml`
@@ -803,7 +811,7 @@ in `personal-assistant` (ruled 2026-08-23; protocol in §3). Keep linked
 worktrees under `~/worktrees/`.
 
 **Exit:** Claude can read but cannot accidentally write representative
-`gpt-hub` paths; Sol has an explicit proposal route for Claude-owned PA paths;
+`gpt-hub` paths; GPT has an explicit proposal route for Claude-owned PA paths;
 the ownership-policy test derives its cases from `ownership.toml`; and both
 agents can edit a neutral shared project file from isolated worktrees.
 
@@ -842,7 +850,7 @@ ordinary project work; and every failure is observable.
 Adapt `handoff`, `observe`, and `pre-run-review`; establish reciprocal
 continuity and observation conventions.
 
-**Exit:** Claude can resume from a Sol handoff and Sol from a Claude handoff
+**Exit:** Claude can resume from a GPT handoff and GPT from a Claude handoff
 without oral reconstruction by Shawn. Neither workflow writes an agent-owned
 surface belonging to the other agent.
 
@@ -866,7 +874,7 @@ explicit cut-over plan for Claude's existing writers.
 
 ### Phase 8 — migrate online writers
 
-Move Claude's extraction and interactive commands, then Sol's future write
+Move Claude's extraction and interactive commands, then GPT's future write
 tools, behind the proven writer boundary. Preserve current storage semantics in
 this phase.
 
@@ -890,8 +898,8 @@ failure is recoverable, and Shawn approves the operational handover policy.
 Git is the historical record for the deliberation that produced this plan:
 
 - `38ae5d4` — Opus drafts the initial proposal;
-- `e44b2d7` — Sol reviews Codex capabilities and architecture;
-- `0b7c7d8` — Fable verifies and reviews Sol's response;
+- `e44b2d7` — GPT reviews Codex capabilities and architecture;
+- `0b7c7d8` — Fable verifies and reviews GPT's response;
 - `594c2b7` — integrates Shawn's access, trust, attribution, maintenance, and
   body-rewrite rulings into a single current policy; and
 - `f0197f6` — applies Fable's second-round review as ratified by
@@ -901,7 +909,7 @@ Git is the historical record for the deliberation that produced this plan:
   extraction to Phase 2, requires a parser census before the continuity
   header format changes, and exempts Claude's harness-supplied
   model-versioned trailer;
-- `3fba09e` — finalises Sol's attribution string; and
+- `3fba09e` — finalises GPT's attribution string; and
 - the current revision — records the ownership-policy rulings of 2026-08-23:
   canonical location at `global-agent-guidance/ownership.toml`, the
   PR-with-other-party-review protocol with Shawn as tie-break, the
