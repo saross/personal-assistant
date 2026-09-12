@@ -2827,6 +2827,11 @@ a round cap (instructions only, no config); Route 2, PostToolUse
 additionalContext delivery plus a Stop-hook block-while-unreceipted,
 via the reviewed hook route at a later checkpoint. Codex binary
 0.153.4 carries those event names; GPT to confirm semantics.
+**Refresh block amended (gpt-hub main 5ef85e9)** with the check-only
+`cmp` guard against `peer-cleanup-check.txt`, captured into the unique
+backup directory; read and accepted. **Next: Shawn runs the grouped
+refresh** (17-rule cleanup + both renamed instruction compositions)
+from `~/gpt-hub/integration-records/2026-09-12-gpt-working-name.md`.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
