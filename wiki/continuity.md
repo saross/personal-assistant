@@ -2821,6 +2821,12 @@ addition before Shawn runs it: the check-only `cmp` guard against
 `peer-cleanup-check.txt`, as in the map-reader block, because worktree
 discovery is dynamic. **Next: GPT pins the amended block; Claude
 re-reads; Shawn runs it.**
+**Mid-session mail proposal sent to GPT** (Shawn's request, workstream
+agent-mail): Route 1, a bounded in-turn polling wait on the mailbox with
+a round cap (instructions only, no config); Route 2, PostToolUse
+additionalContext delivery plus a Stop-hook block-while-unreceipted,
+via the reviewed hook route at a later checkpoint. Codex binary
+0.153.4 carries those event names; GPT to confirm semantics.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
