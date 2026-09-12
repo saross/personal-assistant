@@ -3,19 +3,19 @@ title: "Agent mail — async cross-agent messaging proposal"
 tags: [planning, infrastructure, multi-agent, gpt-hub]
 created: 2026-08-25
 updated: 2026-08-25
-status: signed off by Shawn 2026-08-25 — Claude side implemented; Sol to author the
+status: signed off by Shawn 2026-08-25 — Claude side implemented; GPT to author the
   ownership.toml PR
 ---
 
 # Agent mail — async cross-agent messaging proposal
 
 **Drafted by:** Claude (Fable), from Shawn's suggestion of 2026-08-25.
-**Revised per:** Sol's review of the same day — all revisions accepted.
+**Revised per:** GPT's review of the same day — all revisions accepted.
 **Governing policy:** `global-agent-guidance/ownership.toml` and
-`wiki/planning/sol-in-codex-integration.md`.
+`wiki/planning/gpt-in-codex-integration.md`.
 **Gate:** Codex gains a writable root outside its workspace, so this is a
 loosening under current policy — it proceeds only on Shawn's explicit
-sign-off, then via the standard `ownership.toml` PR (Sol authors, Claude
+sign-off, then via the standard `ownership.toml` PR (GPT authors, Claude
 reviews).
 
 ## Problem
@@ -29,14 +29,14 @@ reviews).
    correctly block it from writing. In practice, Claude's proposal route
    has been Shawn. The channel the policy imagines does not exist yet.
 
-## Design (v2, incorporating Sol's revisions)
+## Design (v2, incorporating GPT's revisions)
 
 ```text
 ~/agent-mail/
 ├── claude/                # Claude-owned subtree (sole writer)
-│   ├── outbox/codex/      # messages Claude sends to Sol
+│   ├── outbox/codex/      # messages Claude sends to GPT
 │   └── seen/codex/        # immutable receipts for messages Claude has read
-└── codex/                 # Sol-owned subtree (sole writer)
+└── codex/                 # GPT-owned subtree (sole writer)
     ├── outbox/claude/
     └── seen/claude/
 ```
@@ -159,7 +159,7 @@ No database, no MCP messaging service, nothing real-time, no automatic
 deletion or archive. Sessions are episodic; an async mailbox matches the
 actual topology. Anything fancier is deferred until evidence demands it.
 
-## Policy integration (Sol's proposed shape, agreed)
+## Policy integration (GPT's proposed shape, agreed)
 
 Additive schema-2 extension, fail closed — existing consumers ignore the
 new key, leaving mail unwritable until renderers deliberately support it:
@@ -170,7 +170,7 @@ new key, leaving mail unwritable until renderers deliberately support it:
 - Each `[[agents]]` entry gains
   `additional_owned_write_roots = ["~/agent-mail/<id>"]`; Claude's
   `proposal_routes` replaces the unwritable `~/gpt-hub/integration-records/`
-  with `~/agent-mail/claude/outbox/codex/`; Sol's gains its outbox
+  with `~/agent-mail/claude/outbox/codex/`; GPT's gains its outbox
   alongside its existing routes.
 - New denials `agent-mail-claude` / `agent-mail-codex` (owner-first, write)
   over each subtree, with cross-agent verification cases at the correct
@@ -183,12 +183,12 @@ in each outbox, trusted-profile read surfacing, restricted-profile
 non-surfacing, and cross-owner denial at both layers. Note: the current
 loader enforces `expected = "deny"` on verification cases, so the
 allow-side attempts live in the acceptance procedure (recorded in the
-integration record) unless Sol prefers to extend the schema with an
+integration record) unless GPT prefers to extend the schema with an
 `expected = "allow"` arm.
 
 ## Implementation split (after Shawn's sign-off)
 
-- **Sol:** author the `ownership.toml` PR in the agreed shape; implement
+- **GPT:** author the `ownership.toml` PR in the agreed shape; implement
   Codex-side surfacing via the renderer + `/hooks` trust review; launcher
   signal; Codex overlay trust norm.
 - **Claude:** review the PR; create the directory skeleton; add
@@ -201,7 +201,7 @@ integration record) unless Sol prefers to extend the schema with an
 ## Decision record
 
 - 2026-08-25: Claude drafts v1 (`e89707b`).
-- 2026-08-25: Sol reviews — broadly in favour; requires receipts over
+- 2026-08-25: GPT reviews — broadly in favour; requires receipts over
   cursors, ID-only surfacing, restricted-profile exclusion with launcher
   signal, trust-norm rewording, UTC+random filenames, read-time
   validation, renderer-managed hooks, explicit acceptance attempts, and
@@ -216,6 +216,6 @@ integration record) unless Sol prefers to extend the schema with an
   missing root, empty, unread, receipted, symlink, oversize), trust norm
   in `global-claude-md/shared.md`, and the first message — itself the
   owner-write acceptance attempt — in `claude/outbox/codex/`. Remaining:
-  Sol's `ownership.toml` PR (Claude reviews), Codex-side surfacing with
+  GPT's `ownership.toml` PR (Claude reviews), Codex-side surfacing with
   launcher signal, Codex overlay norm, and the joint acceptance attempts
   recorded in `gpt-hub/integration-records/`.

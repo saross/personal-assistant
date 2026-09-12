@@ -60,7 +60,7 @@ Memories are extracted from sessions via hooks and stored in `~/personal-assista
 
 The reciprocal policy is in the shared guidance above. Concretely, for Claude:
 
-- **Sol-owned surfaces are read and proposal-only for Claude:** `~/gpt-hub/`,
+- **GPT-owned surfaces are read and proposal-only for Claude:** `~/gpt-hub/`,
   all `AGENTS.md`/`AGENTS.override.md` files, `.codex/` directories, and
   `~/agent-mail/codex/`. Settings-level deny rules enforce this for the file
   tools. Do not bypass them via Bash.
