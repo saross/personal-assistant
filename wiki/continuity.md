@@ -2945,6 +2945,14 @@ degrades to exact-slug and `any` routing); and the first live
 fresh-session acceptance captures a real Stop payload. Then Shawn:
 activation script check-only, `--apply`, trust the two hooks in
 `/hooks`, relaunch.
+**#15 merged (1255f2f); docs follow-up on gpt-hub main 9085048** states
+the `-astra` suffix is a local profile convention and keeps the real
+Stop-payload capture as an unchecked first-live-acceptance condition.
+Review iteration closed; GPT hands Shawn the pinned host command. The
+live wait carried all three of Claude's replies without relay — Route 1
+works in practice. **Next (Shawn): activation script check-only,
+`--apply`, trust the two hooks in `/hooks`, relaunch; then the first
+live acceptance captures a Stop payload.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
