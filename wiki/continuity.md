@@ -2729,6 +2729,23 @@ JSONL fallback is a direct PA read; exec PA's venv python, never source
 branch/head for fresh-context review.** Shawn's authority for step 4
 was relayed by Astra; the design review itself needs none, and the
 embedding approval will be asked of Shawn directly.
+**gpt-hub PR #12 reviewed** (09124d9; launcher
+`config/launch_shared_memory.py`, `config/launch_codex.py` registration
+as `--config` flags, `scripts/check_memory_isolation.py` host
+procedure, `scripts/check_shared_memory.py`, 183 tests): fresh-context
+verdict **merge**, with one Medium to close before host acceptance —
+the launcher does not fail closed on a non-writable log directory (PA's
+logger swallows write errors, so retrievals would be served unlogged).
+Lows: socket-alias probe covers one real path (no /tmp/.s.PGSQL probe;
+port hard-coded); restricted is "disabled" not "absent"; 10 s startup
+timeout may elide tools on a cold venv. All seven design points
+implemented and all four safety mutants killed. Nothing installed into
+`~/.codex`; live PostgreSQL and restricted-isolation acceptance honestly
+not yet claimed. **Next:** Astra fixes the Medium (on the PR or a
+follow-up before acceptance) and lands #12; then Shawn relaunches via
+the trusted launcher, runs the two acceptance commands in the record,
+and decides separately on one local nomic-embed-text call for the
+semantic-search check.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
