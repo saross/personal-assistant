@@ -2255,6 +2255,76 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-08→11 (Tue 8 → Fri 11 Sept, latest PA) — THE HOUSE SOLD AT THE TOP OF THE LADDER, $1,270 OF TOOLS WENT TO ONE GUMTREE BUYER, AND THE WHOLE LATE-SEPTEMBER SPINE WAS REWRITTEN IN AN AFTERNOON
+
+**Four days, one long session (standups and recaps 8–11 Sept).** ⭐⭐ **Offer ACCEPTED Fri 11
+at $1.05M** — the ask, not the floor — from a retired couple downsizing; house off the market;
+**extended settlement aimed at early December.** ⚠⚠ **No contract can be signed until the
+consent orders are filed, and they are STILL UNFILED** despite an urgent message Wed and an
+escalation Fri; **Sarah Bevan's office promised a call-back Mon 14 morning.** Adela's approval
+(Tue), Mohan's contract corrections (Tue call: SC 54 spelling fixed, four items stand by
+explanation), and the NAB signatory (DocuSign Thu, access granted Thu night) all closed this
+week — the one open item is the one Shawn cannot do himself.
+
+**The spine after the sale (all Shawn's rulings, 11 Sept):** works week CANCELLED (agent's
+advice; buyer asked for nothing; Scott for toilet + taps only, date TBC) · container DEFERRED
+to an October return trip · 25 Sept van cleared · drive **week of 28 Sept, probable**, confirmed
+once the MEL start date is known · **moving sale SAT 26, one day** (posted on Gumtree Fri
+night, suburb only) · dump run Sun 27 · kerbside + Salvos + car handover Mon 28 · **ARDC
+second interview MON 21 SEPT 09:00.** Initial shape, not a ruling: disposal to end-Sept,
+Melbourne on the first trip with most Melbourne-bound goods, one return trip for the container.
+
+⭐⭐ **SELLING: $1,270 in one afternoon to one buyer, Lou** — piano $500 collected; table saw +
+mitre saw + marble table $770 bundle on deposit; shelving under consideration at $500. Drill
+press $200 Thu. **Board 7 of 29 sold.** ⭐ **Shawn's channel evidence overturned my record:
+every sale bar the car came from Gumtree, none from Facebook, buyers 30 to late-50s** —
+`selling-channels.md` corrected; Gumtree is primary; my "older audience" line was an
+assumption, marked as such. ⚠ **Cot and fridge slipped SIX days running**, each to something
+reasonable (partner's return, the drill press, the sale, the offer); Shawn named the mechanism
+himself — *breaking flow to dig a cot out of the garage* — and set the rule: **physical task
+before the first computer block** (scratchpad entry). Saturday is the test.
+
+**EFN (Slot 1):** showable draft shown Wed 11:00, Steve and Penny happy; **re-division landed
+Thu evening — Fieldmark product site (second draft) and a NEW company site, `fieldnote-au`
+(first draft)**; product review site LIVE and shared Fri (Bolgiaten first). **Slot 1 was closed
+at the Fri recap and REOPENED the same evening on Shawn's caveat:** three bounded items —
+product close-read, outstanding legal documents onto the company site, company-site edit —
+**done by WED 16 SEPT**, then eRA brochure content (Penny on swag, banners, brochure layout in
+parallel). Flinders logos received (Natasha Worm, WeTransfer) and deployed for review; approval
+of use still with Brand. Jens and Nathan case-study permission in hand.
+
+⭐ **EMAIL REGISTER RECALIBRATED AND A `draft-email` SKILL BUILT (Tue).** Six Claude drafts since
+24 Aug diffed against sent/hand-edited versions — **only two true pairs** — plus eleven unaided
+messages. Finding: **the residual surplus is JUSTIFICATION, not self-deprecation** (Rules 1–2
+had fixed what they were built for; 4 of 4 trailing "so…/which…" clauses were cut, 0 hedges).
+Rules 4–11 added (concise default, state-and-stop, no agreement echo, no signposting,
+decide-not-ask, CTA near the end, warmth light and Shawn's to add, `--` only); prior-art check
+found nothing to defer to. Skill at `skills/draft-email/` (symlinked on AMD-tower only).
+
+⚠⚠ **TWO SELF-CAUGHT ERRORS.** (1) **Arcadia: I resolved the row as "Stage 1 unsuccessful" on
+silence at the 21:59 deadline; the organiser's postponement email arrived at 02:43** — round
+postponed to 22 Sept; if invited, the six-day application lands 22–28 Sept. Absence read as
+verdict, again (claude-obs 74 → 76). (2) **Marketplace "garage sale listing type" does not exist
+in AU** — I described a feature from memory; Shawn found the three real options.
+
+**Also:** RSOS chase set for Thu 24 Sept (full two months; all-day calendar event). Wine cooler
+with Sean (asking his partner). Bolgiaten framing sent by Shawn. GPT integration remainder
+captured to inbox (displaced by the audit round). Shawn's Gemini 3.5 spend located by
+map-reader's own cost report, not this repo. **Weekly review W37: Sun 13 evening.**
+
+**Held over / open:**
+- ⏰⏰ **MON 14 MORNING: Sarah Bevan call-back — the filing date.** If none, call and ask for Sarah.
+- ⏰ **SAT 12: cot BEFORE the laptop, then fridge, then home gym; nudge Sean; share the sale ad
+  to local groups + Marketplace (item listing, $1, 9am–1pm as posted).**
+- **Slot 1 → Wed 16.** Slot 3 EMPTY. W37 review Sun 13 decides both.
+- **Four user-obs candidates from 2026-09-06→08 STILL pending** + four new ones below.
+- **Red Truck:** boxing/container booking waits on the October return-trip date.
+- ⚠ **`draft-email` symlink exists only on AMD-tower** — `ln -sfn ~/personal-assistant/skills/draft-email ~/.claude/skills/draft-email` on zbook.
+- ⚠ Archive-drift gate: one phase1-test worktree session unarchived (`scripts/bulk-archive.py`).
+- Price review of the four remaining listed items (dado, wardrobe, kegerator, keg) not done.
+
+**Hours: 09-08 = 5.25h · 09-09 = 4.25h · 09-10 = 5.75h · 09-11 = 6.0h. Week to Fri: 30.75h, move 10h.**
+
 ### 2026-09-06→08 (Sun 6 → Tue 8 Sept, latest PA) — RDA SUBMITTED ON DAY 31, THE BURN-DOWN MOVED 7→12 IN A DAY, AND THE ONE PRICE I WAVED THROUGH WAS THE ONLY ONE THAT WAS WRONG
 
 **Two and a half days across a weekend and a Monday.** ⭐⭐ **The month's two stuck things both
