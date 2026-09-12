@@ -2746,6 +2746,13 @@ follow-up before acceptance) and lands #12; then Shawn relaunches via
 the trusted launcher, runs the two acceptance commands in the record,
 and decides separately on one local nomic-embed-text call for the
 semantic-search check.
+Astra fixed the Medium on the PR as 15ebf16 (append-open preflight on
+both log destinations after the symlink refusal, value-free error, 30 s
+startup timeout, socket wording scoped); fresh-context delta check: 185
+OK, all four mutants killed, evidence digests match. **Confirmed merge
+#12 at 15ebf16; Astra lands it.** Then Shawn's host steps: relaunch via
+the trusted launcher, the two acceptance commands, and the separate
+embedding-call decision.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
