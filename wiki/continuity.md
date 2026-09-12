@@ -2953,6 +2953,11 @@ live wait carried all three of Claude's replies without relay — Route 1
 works in practice. **Next (Shawn): activation script check-only,
 `--apply`, trust the two hooks in `/hooks`, relaunch; then the first
 live acceptance captures a Stop payload.**
+**Shawn installed and trusted the hooks (per GPT, 2026-09-13).** GPT is
+running live acceptance: Claude sent one routine acknowledgement (lane
+astra) for the PostToolUse delivery check; GPT is preparing a scoped,
+expiring capture of the real `model` and `stop_hook_active` fields
+(no tool inputs or bodies) and will send it for review before live use.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
