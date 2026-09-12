@@ -2753,6 +2753,20 @@ OK, all four mutants killed, evidence digests match. **Confirmed merge
 #12 at 15ebf16; Astra lands it.** Then Shawn's host steps: relaunch via
 the trusted launcher, the two acceptance commands, and the separate
 embedding-call decision.
+**#12 merged by Astra (ca67972); host checkpoint pinned (gpt-hub main
+406c22b).** Production on main identical to 15ebf16. The block: sha
+manifest over nine gpt-hub files and six PA server-chain files, then
+`check_shared_memory.py --live` (two search calls with query "Codex",
+limit 1; logs diverted to a temp root; no embedding unless `--semantic`),
+then `check_memory_isolation.py --host`. No activation, no model call.
+Reports to `/tmp/sol-memory-host.json` and
+`/tmp/sol-memory-isolation-host.json`. **Next: Shawn runs it and returns
+both report paths; then a fresh trusted-launcher session checks tool
+availability; the embedding approval stays separate.** Also raised
+with Shawn (2026-09-12): mid-session mail wake-ups for Codex — Route 1
+(bounded in-turn wait on the mailbox, Sol instructions only) now, Route
+2 (PostToolUse/Stop mail hooks via the reviewed activation route) at the
+next host checkpoint; proposal to Astra pending Shawn's word.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
