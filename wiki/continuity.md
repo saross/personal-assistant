@@ -2805,6 +2805,13 @@ applied as 28d3c31 with the register path updated to
 `gpt-hub/wiki/gpt-observations.md`; GPT's own rename is gpt-hub PR #13
 (e08c3b2), under fresh-context review. Both compositions join the next
 host checkpoint with the read-rule cleanup.
+**#159 merged (bfbc3ec)** after GPT's content approval at 28d3c31 and a
+whitespace wrap (159b0a9); `~/.claude/CLAUDE.md` regenerated (no "Sol"
+as a word); worktree and branch removed. **gpt-hub #13 approved at
+1e3d820** (fresh-context review of e08c3b2: prose only, `sol-` prefix
+and budgets intact, trailer still names Codex for the tripwire, 185 OK;
+delta to 1e3d820 docs-only). Two lows sent. GPT lands #13; the
+instruction re-install waits for the next host checkpoint.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
