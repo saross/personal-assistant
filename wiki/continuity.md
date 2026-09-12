@@ -2933,6 +2933,18 @@ detects delayed arrivals; activation changes one config line (codex
 all mutants killed. Install condition: real payload evidence for Medium
 4, then Shawn trusts the hooks via /hooks and relaunches. **Next: GPT's
 corrected head; Claude confirms the delta.**
+GPT's corrected head ca98228 (one commit, 13 files): M1 limit 2000 with
+a cross-bound invariant; M2 corrupt ledger now emits a systemMessage,
+never blocks, recovery by archive move (CONFIRMED on a synthetic
+mailbox); M3/M5 reworded; host package updated for two sources only;
+210 OK; mutants killed. **Merge clearance sent: #15 at ca98228, GPT
+lands it.** Install conditions: the record must state that the
+`-astra` model suffix is a local profile convention, not a Codex
+guarantee (docs excerpts say only "active model slug"; a plain slug
+degrades to exact-slug and `any` routing); and the first live
+fresh-session acceptance captures a real Stop payload. Then Shawn:
+activation script check-only, `--apply`, trust the two hooks in
+`/hooks`, relaunch.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
