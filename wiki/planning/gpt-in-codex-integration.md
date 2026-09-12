@@ -118,7 +118,7 @@ Claude has read and proposal-only access to:
 
 - global and repository-local `AGENTS.md` and `.codex/`;
 - Codex configuration, hooks, skills, plugins, and agent definitions;
-- all files in `gpt-hub`, including `sol-observations.md`; and
+- all files in `gpt-hub`, including `gpt-observations.md` (formerly `sol-observations.md`); and
 - scripts whose sole purpose is installing or operating GPT's environment.
 
 Claude may review and propose exact changes. GPT or Shawn applies them.
@@ -516,7 +516,7 @@ Keep one register per voice and direction:
   Shawn;
 - PA `user-observations.md`: Shawn's observations about Claude, maintained
   through the existing gated ritual;
-- `gpt-hub/wiki/sol-observations.md`: GPT-owned observations about working with
+- `gpt-hub/wiki/gpt-observations.md` (formerly `sol-observations.md`, kept as a compatibility link): GPT-owned observations about working with
   Shawn; and
 - `gpt-hub/wiki/user-observations.md`: Shawn's observations about GPT, with a
   parallel gated ritual.
@@ -719,7 +719,7 @@ final Claude and GPT trailer strings in
 Do not encode a changing model identifier in hand-authored Git identities.
 Claude's harness-supplied trailer is model-versioned
 (`Co-Authored-By: Claude <model> <noreply@anthropic.com>`) and remains as the
-harness emits it; attribution queries key on `Co-Authored-By:.*(Claude|GPT)`,
+harness emits it; attribution queries key on `Co-Authored-By:.*(Claude|Sol|GPT)`,
 which is stable across model versions. Experiments and evaluations record
 agent persona, harness, model, reasoning effort, temperature, run identifier,
 and operational metrics in their manifests.
