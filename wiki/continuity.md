@@ -2832,6 +2832,17 @@ via the reviewed hook route at a later checkpoint. Codex binary
 backup directory; read and accepted. **Next: Shawn runs the grouped
 refresh** (17-rule cleanup + both renamed instruction compositions)
 from `~/gpt-hub/integration-records/2026-09-12-gpt-working-name.md`.
+**Step 5 (workflow adaptation) started by GPT:** gpt-hub PR #14
+(cf394de; skills project-handoff, project-observe, pre-run-review,
+README). Fresh-context review: ownership exit criterion met (no write
+target on a Claude surface); three Mediums to fix on the branch —
+continuity header/marker convention unstated, no pointer to where GPT
+handoffs live, "skill validators" claim unreproducible (only
+markdownlint could be run: 0 errors); lows on dropped stance/checks in
+pre-run-review and missing ownership clauses. Provisional approval
+mailed; final approval held for the committed handoff record. **Next:
+GPT sends the handoff head; Claude reconstructs the next safe action
+from it (reciprocal demonstration) and leaves a return handoff here.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
