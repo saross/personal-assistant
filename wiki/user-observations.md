@@ -2637,27 +2637,28 @@ licence to apply the deferred section-C roster fixes, and did so without asking.
 think it was right — but it was my call, not yours, and you should know I made it.**
 Flagging in case the scope discipline mattered more than the completeness.
 
-## 2026-09-08→11 (PA — house sold, register calibration, spine rewrite) — Drafted candidates (pending review)
+## 2026-09-08→11 (PA — house sold, register calibration, spine rewrite) — REVIEWED 2026-09-11: A KEPT (generalise), C KEPT; B, D DISCARDED
 
-**Candidate A — you turned a repeated instruction into a system change.** *"I've taken to
+**✅ KEPT — GENERALISE. Candidate A — you turned a repeated instruction into a system change.**
+**General form (Shawn: "keep, generalise"): any instruction Shawn finds himself typing more than twice is a missing rule — the fix is a register line, a skill, or a standing instruction, never a third repetition.** Pairs with the 2026-09-07 standing instruction "ask for the rule, not the answer": that one covers rules Claude should ask for; this one covers rules Shawn notices he is supplying by hand. *"I've taken to
 always asking you to 'be concise', and I'd like to build that in."* That is the 7 Sept
 standing instruction ("ask for the rule, not the answer") applied to your own habit: a prompt
 you were typing every time became a register rule and a skill. ⇒ Worth noting because the
 trigger was noticing your own repetition, not a failure of mine.
 
-**Candidate B — you corrected me with evidence, not with deference, three times in a day.**
+**❌ DISCARDED (Shawn: "not a big deal, these things happen"). Candidate B — you corrected me with evidence, not with deference, three times in a day.**
 The Marketplace garage-sale type ("I only see item, vehicle or home"), the channel ranking
 ("all other sales have come from Gumtree"), and the buyer ages. Each was a fact I had stated
 as advice, and each correction was a sentence long. ⇒ The record is better for it and none of
 it cost more than a line.
 
-**Candidate C — you fed the record every change, unprompted, on a day when everything
+**✅ KEPT. Candidate C — you fed the record every change, unprompted, on a day when everything
 changed.** Works week cancelled, container deferred, van cleared, drive moved, settlement in
 December, interview date — each arrived as a plain statement, sometimes with *"sorry, lots of
 things changed."* ⇒ The board stayed true through the most volatile day of the campaign
 because you treated the record as something to keep current, not something to catch up later.
 
-**Candidate D — you asked "what do you think?" about the sale date and then gave me the fact
+**❌ DISCARDED. Candidate D — you asked "what do you think?" about the sale date and then gave me the fact
 that settled it.** My analysis turned on a conflict with the Sun 27 drive; your next message
 moved the drive. ⇒ The same shape as the 6 Sept Stream C overrule: my reasoning was sound
 inside a frame that had already moved, and you supplied the frame rather than the answer.
