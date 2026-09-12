@@ -2885,8 +2885,21 @@ mail; add to integration-records/2026-09-12-workflow-adaptation.md and
 the beacon a copyable resume prompt and the reviewed head, restating the
 three medium findings from the provisional review so they are checkable
 from the repository; send the new head; land #14 after Claude confirms
-the docs-only delta. In-flight: nothing else; the host refresh block at
-gpt-hub main 5ef85e9 is Shawn's to run."
+the docs-only delta. In-flight: nothing else. The host refresh is complete; do not rerun
+its consumed before-state guard. Automatic discovery remains optional
+and uninstalled; direct source use is approved."
+(Carry-forward corrected 2026-09-12 on GPT's report that Shawn had
+run the refresh: gpt-hub main 2a6f9c4, record section "Host refresh
+completed — 2026-09-12"; verified by Claude from the record.)
+**Step 5 closing:** GPT resumed from the return handoff using its new
+handoff skill (zero divergence, no explanation from Shawn) and made the
+closing commit 8a0e65b: reviewed head and copyable resume prompt in the
+checkpoint and beacon, the three provisional findings restated,
+manual consumer excerpts, validator fingerprint, the conditional-
+restatement difference noted, source-use vs optional discovery in the
+top-level README. Delta from 5954b6b is docs and evidence only (one
+wording line in skills/README.md). **Confirmed ready to land; GPT
+merges.** Both directions of resumption are now demonstrated.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
