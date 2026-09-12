@@ -516,7 +516,8 @@ Keep one register per voice and direction:
   Shawn;
 - PA `user-observations.md`: Shawn's observations about Claude, maintained
   through the existing gated ritual;
-- `gpt-hub/wiki/gpt-observations.md` (formerly `sol-observations.md`, kept as a compatibility link): GPT-owned observations about working with
+- `gpt-hub/wiki/gpt-observations.md` (formerly `sol-observations.md`, kept as a
+  compatibility link): GPT-owned observations about working with
   Shawn; and
 - `gpt-hub/wiki/user-observations.md`: Shawn's observations about GPT, with a
   parallel gated ritual.
