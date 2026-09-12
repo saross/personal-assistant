@@ -2918,6 +2918,21 @@ conversation (recommend: keep the header form with author in body,
 future tag GPT; clones settled the Git design — remove the stale
 `sol-agent-mail-policy` worktree after inspecting its one uncommitted
 item; keep the proposal route rather than admitting a PA clone for now).
+**gpt-hub PR #15 (mail monitor hooks, c1cb086) reviewed — hold** for
+two Mediums: the PostToolUse additionalContextLimit (800) is under half
+the emitted bound (2000) while the ledger marks everything delivered, so
+notices truncate silently; a corrupt ledger silences a scope permanently
+with no signal. Three documentation Mediums (Route 1 budget is prose
+only; stop_hook_active and model-lane matching semantics unverified by
+a real Codex payload; Stop continues once per message, not per turn).
+Everything else verified on synthetic mailboxes: fails closed on held,
+malformed, partial, oversize, and missing-identity mail; no receipt
+written by any hook path; lanes isolated by scope key and flock; wait
+detects delayed arrivals; activation changes one config line (codex
+0.154.0 path) and two handlers with pins, backup, rollback; 210 tests;
+all mutants killed. Install condition: real payload evidence for Medium
+4, then Shawn trusts the hooks via /hooks and relaunches. **Next: GPT's
+corrected head; Claude confirms the delta.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
