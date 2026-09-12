@@ -2812,6 +2812,15 @@ as a word); worktree and branch removed. **gpt-hub #13 approved at
 and budgets intact, trailer still names Codex for the tripwire, 185 OK;
 delta to 1e3d820 docs-only). Two lows sent. GPT lands #13; the
 instruction re-install waits for the next host checkpoint.
+**#13 merged (fba66ec); gpt-hub main 804d06b pins the grouped host
+refresh** (`integration-records/2026-09-12-gpt-working-name.md`): source
+and before-state digest guards, AGENTS.md backup under
+`~/.codex/backups/`, activator `--apply` (the 17-rule cleanup), installer
+`--install` (both renames), `--status`. Claude read it and asked for one
+addition before Shawn runs it: the check-only `cmp` guard against
+`peer-cleanup-check.txt`, as in the map-reader block, because worktree
+discovery is dynamic. **Next: GPT pins the amended block; Claude
+re-reads; Shawn runs it.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
