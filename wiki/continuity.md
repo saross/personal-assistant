@@ -3009,6 +3009,18 @@ specify; Claude answered: proceed repository-local as reviewed, record
 user-level as Shawn's decision on return. GPT's non-model discovery
 check (local app server, skills/list with forceReload, no thread)
 accepted in shape.
+**gpt-hub PR #17 (repository-local skill discovery installer, 1e7da6b)
+reviewed — merge; host step cleared for Shawn** with one precondition:
+the Codex binary pin is a version path, so re-pin if Codex has upgraded
+before the run (or add an active-binary check). Verified on a synthetic
+repository: writes only three git-ignored relative links under
+`.agents/skills/` plus backups in GPT's mail subtree; refuses every
+occupied or linked target before any write; idempotent; partial failure
+resumable; source and installer digests pinned and matching; protocol
+check is initialize + initialized + skills/list only, no thread, bounded;
+228 OK; four mutants killed. User-level scope recorded as Shawn's
+deferred decision. **Next: GPT lands #17 and pins the final block;
+Claude puts it to Shawn.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
