@@ -3003,6 +3003,12 @@ state, backup, verification) for review on workstream skill-discovery.
 **Natural Stop fields verified and the capture control archived**
 (gpt-hub main 71f652b, `stop-verification.json`); actual Stop
 continuation still a separate pending check.
+GPT asked whether Shawn chose repository-local (`.agents/skills` in
+gpt-hub) or user-level (`~/.agents/skills`) discovery. Shawn did not
+specify; Claude answered: proceed repository-local as reviewed, record
+user-level as Shawn's decision on return. GPT's non-model discovery
+check (local app server, skills/list with forceReload, no thread)
+accepted in shape.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
