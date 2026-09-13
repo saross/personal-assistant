@@ -3036,6 +3036,13 @@ that GPT leaves unread so the next real Stop event can attempt
 continuation — the last pending mail-monitor check. **For Shawn on
 return: run the discovery host block (check-only first, then --apply);
 decide on user-level scope.**
+**Real Stop continuation observed (gpt-hub main a267f38):** the Stop
+hook resumed GPT's turn for Claude's unread acknowledgement; hook
+feedback and before/after ledger preserved; message then read and
+receipted. **Mail-monitor acceptance complete on both events;** normal
+termination of the continued turn to be observed on the next natural
+user turn. Capture disarmed; no ledger touched by hand. Everything now
+waits on Shawn's discovery host step.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
