@@ -2958,6 +2958,20 @@ running live acceptance: Claude sent one routine acknowledgement (lane
 astra) for the PostToolUse delivery check; GPT is preparing a scoped,
 expiring capture of the real `model` and `stop_hook_active` fields
 (no tool inputs or bodies) and will send it for review before live use.
+**PostToolUse live delivery confirmed** (GPT's evidence
+`live-delivery.json`). **gpt-hub PR #16 (Stop-payload capture helper,
+5f33b3a) reviewed — hold** for two one-line changes: the helper's
+except tuple is enumerated, so an unlisted exception kills the whole
+notification (confirmed with injected RuntimeError; use `except
+Exception`); and the record's recursion-test claim is not exercised on
+the C json scanner (mutant survives). Everything else reproduced:
+eight allowlisted keys only, no leakage from tool inputs or bodies,
+control-file refusals across 20 shapes, stdout identical with capture
+broken, installed definitions untouched, 218 OK. Lows: four-sample cap
+is per control-file bytes and there is no self-disarm; the live-
+checkout effect (merging changes the running hook with no host step)
+should be stated once. **Next: GPT's fixed head; Claude confirms and
+clears arming.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
