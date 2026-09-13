@@ -3083,6 +3083,13 @@ AGENTS.md PR from the lane.**
 #18 merged; gpt-hub main fa5120e; main pin refreshed to 56baa1d (Shawn's
 benchmark work had advanced main; ancestry verified), runtime pins
 unchanged. Host preparation block is with Shawn via Codex.
+**Shawn ran the bench preparation; clone prepared on sol/bench-entry at
+the pin. Activation delta read (gpt-hub main fa5120e):** two additions
+(bench lane `.git` write, workspace root) and eighteen removals, all
+for the retired `sol-agent-mail-policy` lane (root + 17 carve-outs), no
+restricted or hooks change — **cleared**; the removals are the intended
+consequence of that lane's retirement. GPT pins the activation block
+with the fresh-diff guard; Shawn runs it in his Codex session.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
