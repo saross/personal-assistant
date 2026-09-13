@@ -3028,6 +3028,14 @@ captured once and held through every recheck and backup-copy
 validation). Fresh-context delta check: all CONFIRMED on a synthetic
 repository, 231 OK, four mutants killed, pins match. **Confirmed for
 merge; host step cleared for Shawn's return.**
+**#17 merged (f3ac16e); final host block on gpt-hub main 02d7a28**
+under "Reviewed host command — ready for Shawn" in
+`integration-records/2026-09-13-skill-discovery.md`; pins re-verified
+against the cleared values. Claude sent one routine acknowledgement
+that GPT leaves unread so the next real Stop event can attempt
+continuation — the last pending mail-monitor check. **For Shawn on
+return: run the discovery host block (check-only first, then --apply);
+decide on user-level scope.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
