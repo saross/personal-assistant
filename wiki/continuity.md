@@ -3080,6 +3080,9 @@ lanes present; four mutants killed; no Medium. Host command cleared for
 Shawn once GPT re-checks the main pin. **Next (Shawn, via Codex): run
 the preparation block; then the activation block; relaunch; merge the
 AGENTS.md PR from the lane.**
+#18 merged; gpt-hub main fa5120e; main pin refreshed to 56baa1d (Shawn's
+benchmark work had advanced main; ancestry verified), runtime pins
+unchanged. Host preparation block is with Shawn via Codex.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
