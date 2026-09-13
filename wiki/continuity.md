@@ -3072,6 +3072,14 @@ will create `sol/bench-entry` locally before validation; the
 activation diff will carry a workspace-root line as well as the `.git`
 grant. GPT writes a fresh-lane helper (delta check by Claude) and drives
 the rest with Shawn.
+**gpt-hub PR #18 (fresh-clone preparation, 63f99d5) approved:** synthetic
+runs confirm refusal of any occupied path, pin checks before and after
+clone, single-branch main refspec, primary read-only, and a two-line
+permission diff (lane `.git` write, workspace root); 245 OK with both
+lanes present; four mutants killed; no Medium. Host command cleared for
+Shawn once GPT re-checks the main pin. **Next (Shawn, via Codex): run
+the preparation block; then the activation block; relaunch; merge the
+AGENTS.md PR from the lane.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
