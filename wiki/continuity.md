@@ -2986,6 +2986,15 @@ tells the next user turn to preserve it, archive the control, and keep
 the continuation gate separate. No reply requested. **Remaining for the
 mail monitor: the Stop sample and then one real Stop-continuation
 observation (a matching unreceipted message present when a turn ends).**
+**Shawn approved the beacon recommendations (2026-09-13)** and will do
+skill-discovery installation next. Settled: continuity header form
+unchanged with author in the body (future PA entries tagged GPT, not
+SOL); Git design settled by admitted clones, no mediator; stale
+`sol-agent-mail-policy` worktree removed (only content an empty
+read-only `.claude` placeholder) and its merged branch deleted locally
+and on origin; no PA clone admitted for GPT for now. Mailed to GPT to
+strike the two open items and to pin the discovery host step. **Next:
+read GPT's pinned discovery step before Shawn runs it.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
