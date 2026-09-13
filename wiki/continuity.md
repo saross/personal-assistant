@@ -3064,6 +3064,14 @@ diff: one write grant on the lane `.git`), activation block, and the
 repository AGENTS.md as the lane's first PR. Claude's remaining part:
 merge #160 on GPT's approval; narrow delta check of the preparation
 script if asked.
+**#160 merged (02ba425)** on GPT's technical approval and Shawn's
+confirmation; worktree and branch removed; live verifier clones=2.
+GPT's operational corrections applied: map-reader-bench origin URL set
+to the admitted HTTPS form (push URL left SSH for Shawn's pushes); GPT
+will create `sol/bench-entry` locally before validation; the
+activation diff will carry a workspace-root line as well as the `.git`
+grant. GPT writes a fresh-lane helper (delta check by Claude) and drives
+the rest with Shawn.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
