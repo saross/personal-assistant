@@ -73,6 +73,18 @@ clone_mode = "full-single-branch"
 admitted_on = "2026-09-11"
 admitted_by = "shawn"
 
+[[admitted_clones]]
+id = "codex-map-reader-bench-entry"
+agent = "codex"
+repository = "~/Code/map-reader-bench"
+lane_path = "~/worktrees/map-reader-bench/sol-bench-entry"
+remote = "https://github.com/saross/map-reader-bench.git"
+branch_namespace = "sol/*"
+storage = "independent-clone"
+clone_mode = "full-single-branch"
+admitted_on = "2026-09-13"
+admitted_by = "shawn"
+
 [[denials]]
 id = "agent-mail-claude"
 owner = "claude"
