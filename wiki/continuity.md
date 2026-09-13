@@ -3052,6 +3052,18 @@ Shawn's decision on wider scope: additional skills only as needed
 (user-level not pursued). Mail live acceptance fully closed after
 normal termination of the continued turn was observed. **Milestone B
 step 5 complete including discovery. Nothing pending on either side.**
+**Second lane admission started (2026-09-13):** Shawn created
+`~/Code/map-reader-bench` and wants to work with GPT there while low on
+Fable credit. PA draft PR #160 (worktree `claude-admit-map-reader-bench`,
+branch `claude/admit-map-reader-bench`) adds `codex-map-reader-bench-entry`
+(lane `~/worktrees/map-reader-bench/sol-bench-entry`, HTTPS remote, sol/*,
+full single-branch clone of main; verifier clones=2; live test pins
+both). Mailed GPT to review, then drive the rest with Shawn directly:
+clone preparation (no worktree to migrate), profile render (expected
+diff: one write grant on the lane `.git`), activation block, and the
+repository AGENTS.md as the lane's first PR. Claude's remaining part:
+merge #160 on GPT's approval; narrow delta check of the preparation
+script if asked.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
