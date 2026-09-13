@@ -2995,6 +2995,14 @@ read-only `.claude` placeholder) and its merged branch deleted locally
 and on origin; no PA clone admitted for GPT for now. Mailed to GPT to
 strike the two open items and to pin the discovery host step. **Next:
 read GPT's pinned discovery step before Shawn runs it.**
+Shawn told the Codex session directly that he is AFK and that both
+agents should continue autonomously on skill discovery and
+adaptation/installation, with him clearing host steps on return. GPT
+is preparing a guarded discovery installation (source guard, before-
+state, backup, verification) for review on workstream skill-discovery.
+**Natural Stop fields verified and the capture control archived**
+(gpt-hub main 71f652b, `stop-verification.json`); actual Stop
+continuation still a separate pending check.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
