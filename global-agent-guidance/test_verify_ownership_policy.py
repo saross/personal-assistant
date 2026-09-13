@@ -58,11 +58,12 @@ admitted_by = "shawn"
             candidate.write_text(text)
             return verifier.load_policy(candidate)
 
-    def test_live_policy_admits_exactly_the_first_map_reader_lane(self) -> None:
-        """The first real admission (2026-09-11): one lane, every field pinned.
+    def test_live_policy_admits_exactly_the_two_reviewed_lanes(self) -> None:
+        """Two real admissions, every field pinned.
 
-        Until then this test asserted an empty list. A second admission must
-        extend this assertion deliberately, with its own review.
+        map-reader-llm (2026-09-11) and map-reader-bench (2026-09-13). A
+        further admission must extend this assertion deliberately, with its
+        own review.
         """
         self.assertEqual(self.policy.get("admitted_clones", []), [{
             "id": "codex-map-reader-llm-phase2",
@@ -75,9 +76,20 @@ admitted_by = "shawn"
             "clone_mode": "full-single-branch",
             "admitted_on": "2026-09-11",
             "admitted_by": "shawn",
+        }, {
+            "id": "codex-map-reader-bench-entry",
+            "agent": "codex",
+            "repository": "~/Code/map-reader-bench",
+            "lane_path": "~/worktrees/map-reader-bench/sol-bench-entry",
+            "remote": "https://github.com/saross/map-reader-bench.git",
+            "branch_namespace": "sol/*",
+            "storage": "independent-clone",
+            "clone_mode": "full-single-branch",
+            "admitted_on": "2026-09-13",
+            "admitted_by": "shawn",
         }])
 
-    LIVE_ADMISSIONS = 1   # the fixture below is appended to the live policy
+    LIVE_ADMISSIONS = 2   # the fixture below is appended to the live policy
 
     def test_well_formed_admission_is_accepted(self) -> None:
         policy = self.load_with(self.ADMISSION)
