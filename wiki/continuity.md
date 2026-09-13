@@ -3090,6 +3090,13 @@ for the retired `sol-agent-mail-policy` lane (root + 17 carve-outs), no
 restricted or hooks change — **cleared**; the removals are the intended
 consequence of that lane's retirement. GPT pins the activation block
 with the fresh-diff guard; Shawn runs it in his Codex session.
+**Bench activation complete (Shawn ran it; GPT verified, gpt-hub main
+e3f126d):** installed config equals the reviewed candidate, backup
+matches before-state, both admissions validate, fresh check-only has
+no diff, hooks and restricted profile unchanged. **Second lane
+infrastructure done.** Remaining is project work in Shawn's Codex
+session: the fresh benchmark session reads its briefing, publishes the
+AGENTS.md entry-point PR, Shawn merges. Nothing pending for Claude.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
