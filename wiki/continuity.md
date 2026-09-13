@@ -3021,6 +3021,13 @@ check is initialize + initialized + skills/list only, no thread, bounded;
 228 OK; four mutants killed. User-level scope recorded as Shawn's
 deferred decision. **Next: GPT lands #17 and pins the final block;
 Claude puts it to Shawn.**
+GPT's final head d83f23f closes the Medium (active-codex check via
+`shutil.which` + `resolve()` equality plus digest; clean refusal on a
+pruned release) and their own self-found race (manifest fingerprint
+captured once and held through every recheck and backup-copy
+validation). Fresh-context delta check: all CONFIRMED on a synthetic
+repository, 231 OK, four mutants killed, pins match. **Confirmed for
+merge; host step cleared for Shawn's return.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
