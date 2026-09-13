@@ -3043,6 +3043,15 @@ receipted. **Mail-monitor acceptance complete on both events;** normal
 termination of the continued turn to be observed on the next natural
 user turn. Capture disarmed; no ledger touched by hand. Everything now
 waits on Shawn's discovery host step.
+**Shawn ran the discovery host block (2026-09-13); discovery-verified
+for all three repository-scope skills** (gpt-hub main 3401ddd; result,
+before-state, backup, and GPT's independent verification under
+`integration-records/evidence/2026-09-13-skill-discovery/`); the three
+skills appear in a normal Codex session's catalogue without restart.
+Shawn's decision on wider scope: additional skills only as needed
+(user-level not pursued). Mail live acceptance fully closed after
+normal termination of the continued turn was observed. **Milestone B
+step 5 complete including discovery. Nothing pending on either side.**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
