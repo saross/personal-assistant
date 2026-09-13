@@ -2978,6 +2978,14 @@ added. **Confirmed for merge and arming (this session only); GPT
 lands #16, arms, captures the PostToolUse fields and the natural Stop
 sample, archives both into the evidence directory.** Stop continuation
 remains a separate check.
+**#16 merged (6506227); capture armed; first live PostToolUse sample:
+model `gpt-6-astra`, stop_hook_active absent** — the lane-suffix
+convention is now observed, not inferred (gpt-hub main 208364b). The
+Stop sample arrives with GPT's natural final response; their continuity
+tells the next user turn to preserve it, archive the control, and keep
+the continuation gate separate. No reply requested. **Remaining for the
+mail monitor: the Stop sample and then one real Stop-continuation
+observation (a matching unreceipted message present when a turn ends).**
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
