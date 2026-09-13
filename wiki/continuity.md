@@ -2972,6 +2972,12 @@ is per control-file bytes and there is no self-disarm; the live-
 checkout effect (merging changes the running hook with no host step)
 should be stated once. **Next: GPT's fixed head; Claude confirms and
 clears arming.**
+GPT's fixed head c26eb03: `except Exception` (one line), injected-
+exception tests for both events, claim corrected, guide sentences
+added. **Confirmed for merge and arming (this session only); GPT
+lands #16, arms, captures the PostToolUse fields and the natural Stop
+sample, archives both into the evidence directory.** Stop continuation
+remains a separate check.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
