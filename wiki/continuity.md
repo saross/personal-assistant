@@ -3097,6 +3097,14 @@ no diff, hooks and restricted profile unchanged. **Second lane
 infrastructure done.** Remaining is project work in Shawn's Codex
 session: the fresh benchmark session reads its briefing, publishes the
 AGENTS.md entry-point PR, Shawn merges. Nothing pending for Claude.
+**map-reader-bench PR #1 (AGENTS.md onboarding, 4d58e93) approved for
+Shawn to merge (2026-09-14):** five doc files; CI checks passed on the
+head (GPT's token could not see them); ruff, 220 pytest, markdownlint
+reproduced; frozen outputs untouched. One Medium ratified: GPT rewrote
+the interim beacon's merge terms to "Shawn merges", which records
+Shawn's own instruction; asked GPT to flag such changes explicitly in
+future. Lows deferred (a policy bullet belongs in the shared guidance;
+HTTPS implicit in the fetch line).
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
