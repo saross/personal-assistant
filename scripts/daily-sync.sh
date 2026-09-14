@@ -3394,9 +3394,17 @@ if [[ $DRY_RUN -eq 0 ]]; then
                 fusermount -uz "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1 || true
             fi
             mkdir -p "$HOME/mnt/rpi-shares"
+            # 9>&- closes the daily-sync lock descriptor for this child only.
+            # sshfs DAEMONISES and stays resident. Bash does not set
+            # close-on-exec on the `exec 9>"$LOCK_FILE"` above, and a flock is
+            # held against the open file DESCRIPTION rather than the descriptor
+            # number, so an inherited copy keeps the lock alive after this
+            # script exits and refuses every later run — which the trigger then
+            # reports as ordinary contention, so the block is silent.
+            # Diagnosed 2026-09-14; see wiki/daily-sync-lock-leak-2026-09-14.md.
             if timeout 20 sshfs -o compression=no,ServerAliveInterval=15,reconnect \
                     shawn@rpi-server:/opt/encrypted/workspace/shares \
-                    "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1; then
+                    "$HOME/mnt/rpi-shares" >>"$LOG_FILE" 2>&1 9>&-; then
                 log "cc-archives sync: self-mount succeeded"
             else
                 log "cc-archives sync: self-mount FAILED (see log) — will skip"
