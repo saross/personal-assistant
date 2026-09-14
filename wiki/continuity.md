@@ -2260,7 +2260,8 @@ reopen settled questions:
 **Three days, one session.** ⭐⭐ **SATURDAY: the cot came out of the garage and was photographed
 BEFORE the first computer block** — Shawn's own rule, set Thursday after a six-day slip, tested the
 very next morning and held. **Cot and bike both posted the same day.** ⛔⛔ **MONDAY: the accepted
-$1.05M offer died — the buyer suffered a heart attack.** House back to market, **open home Sat 19**,
+$1.05M offer died — the buyer suffered a heart attack.** **She survived and is in hospital.**
+House back to market, **open home Sat 19**,
 early-December settlement gone. Nothing was wrong with the deal; it is pure bad luck. ⛔ **The same
 afternoon zbook's motherboard failed** on the way to physio, costing the day's EFN block; HP on-site
 technician within three business days.
