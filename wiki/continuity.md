@@ -2255,6 +2255,108 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-12→14 (Sat 12 → Mon 14 Sept, latest PA) — THE RULE HELD ON ITS FIRST TEST, THE BOARD ESSENTIALLY CLEARED, AND THEN THE BUYER HAD A HEART ATTACK
+
+**Three days, one session.** ⭐⭐ **SATURDAY: the cot came out of the garage and was photographed
+BEFORE the first computer block** — Shawn's own rule, set Thursday after a six-day slip, tested the
+very next morning and held. **Cot and bike both posted the same day.** ⛔⛔ **MONDAY: the accepted
+$1.05M offer died — the buyer suffered a heart attack.** House back to market, **open home Sat 19**,
+early-December settlement gone. Nothing was wrong with the deal; it is pure bad luck. ⛔ **The same
+afternoon zbook's motherboard failed** on the way to physio, costing the day's EFN block; HP on-site
+technician within three business days.
+
+⭐⭐ **STREAM A'S ONLINE LISTING PROGRAMME IS ESSENTIALLY COMPLETE.** **8 sold / $10,330 realised /
+8 listings live.** **A 45-row walk-through on Saturday cut the online queue from twelve items to
+six and then to one:** the Red Truck container's space reversed the 18 Aug ruling, so **the whole
+home gym, the Little Giant ladder, the pressure washer and the saw horses are KEPT for storage**;
+the **wine cooler is KEPT** (Sean declined; a thermoelectric 72-bottle unit costs thousands new);
+**Brian is taking the couch** (the item most likely to have been left on the driveway); the
+**carboy turned out to be already offered free inside the live kegerator ad**; **pedals travel to
+Melbourne**; **office chair and trolley default to the 26 Sept sale**. **Only the fridge remains
+listable** — and with no buyer, the inclusion question is moot. ⇒ **The selling work shifts from
+listing to running the sale.**
+
+⭐⭐ **EVERY ANCHORED PRICE WAS RIGHT; EVERY UNANCHORED ONE WAS WRONG — a third and fourth time.**
+**Bike repriced $280 → $200** against 24 live Sydney asks (older hybrids ask $150–250; anything at
+$300+ has sat a year or more). **Fridge $150 CONFIRMED** against 42 bottom-mount asks. ⭐ **Deck
+chairs are the lesson of the three days: I priced them $90, Sol reviewed the ad and proposed $110,
+and BOTH of us were wrong in the same direction** — a live check found **Bunnings sells a Marquee
+7-Piece Steel Sling Back Setting, six stackable sling chairs PLUS a glass table, for $99 NEW.**
+⇒ **Replacement cost means the cheapest thing that solves the buyer's problem, which here includes
+a free table.** Posted at $75. **Sol also caught a false claim of mine** — *"a set of six for the
+price of two new chairs"* — cut. ⭐ **It also explains the stale used market:** a Gumtree set of six
+at $60 unsold since January is not mispriced, it is a market with a $99 ceiling.
+
+⚠⚠ **THREE RETRIEVAL FAILURES IN ONE DAY, ALL THE SAME SHAPE — a record read as an authority.**
+**(1)** Monday's standup reported Penny's Museum of London manual as *"14 days silent"*; **she had
+uploaded it to Slack on 9 Sept, twelve minutes after Shawn asked** — the waiting-for row was stale
+and I read it as live, and the Penny collaborator report filed the night before named it as a
+blocker, wrongly. **(2)** I reported the Bolgiaten website approval NOT FOUND and offered a
+verbal-approval hypothesis; **Paul Morrissey had approved it by email on Fri 11 at 16:38, 28 minutes
+after Shawn shared the build** — `search_threads` rendered five of the thread's eight messages and I
+read the truncated list as the thread; `get_thread` returned all eight. **(3)** The day's own Prompt
+Craft lesson was a `pgrep -f` liveness check that self-matches over SSH and can only ever say ALIVE.
+⇒ ⭐⭐ **A SEARCH VIEW IS NOT THE SOURCE, AND A CHECK THAT CANNOT RETURN THE MISSING THING WILL
+ALWAYS SAY IT IS MISSING.** Two more of mine the same weekend: a `.replace()` that silently no-opped
+(the exact failure written into the craft page the night before), and **"Wed 17" for a Thursday**,
+propagated to five places before a guard caught it.
+
+⭐ **W37 WEEKLY REVIEW (Sun 13): the first slot closure in four weeks** — RDA submitted on Day 31,
+ending a three-week zero-closure run. **40.5h, second-heaviest of the month, no rest day for the
+second week running.** ⚠ **Memory-health integrity reads FAIL for the first time** — 4,684 archived
+rows still in PostgreSQL, surfaced by a check *Shawn's own audit tightened on 9 Sept*; **0 leaked
+into the active view**, so it is a stricter test of an old condition, not new divergence (inbox).
+**Anchor drift breached at 28.2%.** ⭐ **Cluster-and-carry ran after an eight-week deferral: five
+craft rules carried into `notes/llm-craft.md`** after one revision round — adjudication vs
+executability, reproduction vs currency gates, **the generalised "a fix is not complete until
+everything derived from the fixed thing has been re-derived"**, the evaluation frame as a
+rule-chosen parameter, premises as claims, and draft-vs-sent register calibration. **Shawn dropped
+the pricing cluster as over-interpreted and cut the S152 list to its one real theme.**
+
+**Shawn's rulings (13–14 Sept):** **Slot 1 holds WED 16** — *"Wed 16 is real for the website"* —
+Mon and Tue are EFN days, and anything left Wednesday evening becomes a dated backlog row, not a
+carry. **Slot 3 fills THU 17 with ARDC second-interview prep** (interview **Mon 21 09:00**), and
+**Thu 17 already carries the ARDC and RDA Roadshow in Sydney, 09:30–11:30 at UTS** — prep by another
+name. ⏰ **Thursday is a travel day: ~90 min each way, tied up to ~14:00, and with zbook dead the
+fallback is tablet + keyboard over remote control, with the train given to interview prep.**
+**Map-reader stays a drive-by through departure** — Shawn's weekend hours on it were a deliberate
+break with a stated stake: *"getting more and more worried about being scooped."*
+
+⭐ **CONSENT ORDERS — A DATE AT LAST.** **Sophie at SBFL promised a DRAFT FILING BY WED 16**, with
+one condition: **the bonds sold and the cash ready.** Bonds are already on CMC at the highest fixed
+ask that clears the whole holding (deliberately not "at market"), **with a 10:00 Tue tripwire to
+adjust if unsold.** ⭐ **Lloyds term deposits researched: they CANNOT be transferred, only broken —
+and breaking is far cheaper than assumed.** The International conditions charge **0.1% of balance
+per remaining full month (min £50) and the accrued INTEREST IS KEPT** — ~0.4% with four months left,
+against the ~1.33% Shawn expected to forfeit. ⏰ **Tell Sophie the mechanism before the draft: an
+order to "transfer the deposit" cannot be complied with.** `notes/move/lloyds-term-deposits.md`.
+
+**Held over / open:**
+- ⏰⏰ **TUE 15 = FULL EFN DAY, the last clear one before Wed 16.** Three bounded items; Monday's
+  block was lost to the collapse and the laptop.
+- ⏰ **Bonds by 10:00 Tue** (adjust the ask if unsold) · **tell Sophie the deposit mechanism.**
+- ⏰ **Sale ad to local Facebook groups + a Marketplace item listing — FOURTH day pending**, 11 days
+  out; the packet's own schedule wanted it ~10 days out. Gumtree-only so far.
+- **Deck chair dimensions** to measure and add to the live ad (armrest height decides whether they
+  fit under a buyer's table).
+- ⚠ **The works week was cancelled BECAUSE THAT BUYER ASKED FOR NOTHING** — that reason left with
+  the buyer. **Re-ask the agent before Sat 19.**
+- ⏰ **Ask the agent to run the Sat 26 open home AFTER the sale ends at 1pm** (Shawn's ruling).
+- **Fridge** is listable on its own merits whenever Shawn wants; **necklace** stays off until found.
+- ⭐ **Wardrobe: prospective buyer FRI evening** — the free-to-a-collector step is held until after.
+- ⚠ **zbook: HP technician Tue–Thu.** Confirm the **Mon 21 Google Meet** machine has camera and mic.
+- **Four user-obs candidates from 2026-09-06→08 still pending**, plus older sets; the
+  **`working-with-claude` cluster (4 rows) deferred to W38**.
+- **Memory-health integrity ruling** (4,684 archived PG rows) — inbox, after the move.
+- ⚠ **Archive-drift gate: one phase1-test worktree session unarchived** (`scripts/bulk-archive.py`).
+- ⚠ **`draft-email` symlink still exists only on AMD-tower.**
+- **Agent-mail → Claude-session ↔ Claude-session** captured to backlog: routing already
+  generalises, but `session-start-agent-mail.py:274` deliberately skips self-addressed mail.
+  Interim answer is a plain file outside both git trees.
+
+**Hours: 09-12 = 5.0h · 09-13 = 4.75h · 09-14 = 3.75h. Three-day total 13.5h.**
+
+
 ### 2026-09-08→11 (Tue 8 → Fri 11 Sept, latest PA) — THE HOUSE SOLD AT THE TOP OF THE LADDER, $1,270 OF TOOLS WENT TO ONE GUMTREE BUYER, AND THE WHOLE LATE-SEPTEMBER SPINE WAS REWRITTEN IN AN AFTERNOON
 
 **Four days, one long session (standups and recaps 8–11 Sept).** ⭐⭐ **Offer ACCEPTED Fri 11
