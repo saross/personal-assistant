@@ -2255,6 +2255,87 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-15 (Tue, latest PA) — A MELANOMA DIAGNOSIS MOVED THE DEPARTURE, AND THE FEATURES PAGE LANDED ANYWAY
+
+⛔⛔ **A mole removed at last week's annual skin check is a MELANOMA — stage 0, in situ.** **Wide
+local excision with a 5 mm margin FRI 18 SEPT**, tissue to pathology; **stitches out ~MON 28.**
+⭐⭐ **Shawn's ruling: finish the treatment HERE, with his own doctor, and stay for the stitches
+AND the lab results.** ⇒ **DEPARTURE MOVES FROM "week of 28, probable" TO ~29–30 SEPT AT THE
+EARLIEST, AND IS NOW GATED ON A LAB RESULT RATHER THAN ON LOGISTICS.** He said plainly he is
+throttling back this week; the standup was written on that basis rather than running the
+escalation machinery.
+
+⭐ **The day still delivered: 3.75h, and the Fieldmark FEATURES PAGE IS FINISHED** — the first
+Slot 1 progress since Friday, on a day that had been written off by lunchtime. ⭐⭐ **The move
+worth keeping is the substitution:** the plan named the product-site *close read* for the one
+uninterrupted block, and Shawn did the nearly-done features page instead. **When concentration is
+short, spend it on the item closest to done, not the item highest on the list.**
+
+⛔ **WED 16 WILL BE MISSED — and Shawn told Steve and Penny BEFORE the date, promising an ETA by
+COB WED 16.** ⭐ **That improved on my proposal, which had fused two separable things:** I
+suggested picking Fri 25 *and* notifying them. **He separated communicating the slip (the whole
+value, and urgent) from committing to a date (which he cannot yet judge, because Friday's
+procedure has not happened).** ⇒ **New hard commitment: the ETA, by COB Wed 16.**
+
+⭐ **THE LEGAL CHAIN'S CASH PRECONDITION IS MET.** **All bonds SOLD**, bank account linked to the
+brokerage, funds transferring Wed. ⭐ **Lloyds term deposits LIQUIDATED — the bank confirmed there
+is NO WAY TO TRANSFER**, exactly as the conditions implied (no assignment clause; condition 3.1.3
+bars withdrawals in-term; an early closure pays into the holder's *own* servicing account). Funds
+by end of week. ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
+drafting question died with the liquidation — the orders need no transfer-at-maturity wording.**
+`notes/move/lloyds-term-deposits.md` records the break-cost arithmetic for next time (0.1% of
+balance per remaining full month, min £50, **accrued interest kept**).
+
+⏰ **THE HOUSE HAS A WARM LEAD AND A PRICE QUESTION.** **Second-look buyer at 17:30 — a younger
+couple with kids, *"really interested"* — but Bart is not sure they can or will meet the minimum
+price.** Fuller report Wed. **Open home SAT 13:15.**
+
+⭐ **Three move collisions created by the diagnosis were closed the same day, two of them without
+needing a decision.** **Car handover moved to TUE 29 SEPT EVENING** — Rhianna's counter to the
+Mon 14 email, which removed the clash with stitches-out on the 28th; ⭐ **it resolved because the
+commitment email went out on its due date rather than late.** **The carless gap after it was
+closed on precedent, not optimism** — Shawn ran two weeks without the car earlier this year, and
+the station is a 15-minute walk. **Wardrobe collection confirmed 18:00 FRI 18** and ruled fine
+despite the morning's procedure; both events calendared.
+
+⚠ **AND THE OTHER HALF OF THIS SESSION (Sat 12 → Mon 14) IS LOGGED SEPARATELY ABOVE** — the sale
+collapsing on the buyer's heart attack (**she survived; she is in hospital**), zbook's motherboard
+failing, the W37 review, the llm-craft carry, and **the daily-sync lock leak diagnosed by a
+concurrent session, independently verified here, and fix 1 applied** (`9>&-` on the sshfs
+self-mount; `wiki/daily-sync-lock-leak-2026-09-14.md`).
+
+**Held over / open:**
+- ⏰⏰ **WED 16: the ETA to Steve and Penny, by COB.** The one promise with a name on it.
+- ⏰ **WED 16: transfer the bond funds** · **tell Sophie the cash position** (her draft was due
+  about now and cash-ready was her condition).
+- ⏰ **Bart's fuller report on the second-look couple — ask for a NUMBER, not an impression.**
+  A $50k gap and a $200k gap are different conversations.
+- **Deck-chair dimensions** → edit the live Gumtree ad (W/D/H, seat height, **armrest height**).
+- ⏰ **Sale ad to local Facebook groups + a Marketplace item listing — SIXTH day pending**, 10 days
+  out; the packet's own schedule wanted it ~10 days out. Gumtree-only.
+- ⚠ **The works week was cancelled because THAT buyer asked for nothing** — the reason left with
+  the buyer. **Re-ask the agent before Sat 19.**
+- ⏰ **Ask the agent to run the SAT 26 open home AFTER the moving sale ends at 1pm.**
+- **Fridge** listable on its own merits (inclusion question is moot without a buyer); **necklace**
+  stays off until found; **office chair + trolley** default to the sale.
+- ⏰ **THU 17: ARDC and RDA Roadshow, Sydney, 09:30–11:30 at UTS** — a travel day (~90 min each
+  way, tied up to ~14:00, **tablet + keyboard over remote control** since zbook is out, train given
+  to interview prep). **GroundSight 16:30.** **ARDC interview MON 21 09:00.**
+- ⚠ **daily-sync lock leak: FIX 2 (untrack the lock file) MUST WAIT until zbook is back and has
+  pulled fix 1**, or a leak there becomes permanent. **FIX 3 (make a refused lock legible) needs
+  Shawn's call** on how loud. Inbox row + `wiki/daily-sync-lock-leak-2026-09-14.md`.
+- ⚠ **`index-session-content-gate` is STILL ABSENT on amd-tower** — flagged at this session's start
+  and not addressed since. That script has never completed a run on this machine.
+- ⚠ **Archive-drift gate: one phase1-test worktree session unarchived** (`scripts/bulk-archive.py`),
+  unchanged since 12 Sept.
+- ⚠ **`draft-email` symlink still exists only on AMD-tower.**
+- **Four user-obs candidates from 2026-09-06→08 still pending**, plus older sets; the
+  **`working-with-claude` cluster (4 rows) deferred to W38**.
+- **Memory-health integrity ruling** (4,684 archived PG rows) — inbox, after the move.
+
+**Hours: 09-15 = 3.75h** (move 2.0 · efn 1.0 · map-reader-bench 0.75).
+
+
 ### 2026-09-12→14 (Sat 12 → Mon 14 Sept, latest PA) — THE RULE HELD ON ITS FIRST TEST, THE BOARD ESSENTIALLY CLEARED, AND THEN THE BUYER HAD A HEART ATTACK
 
 **Three days, one session.** ⭐⭐ **SATURDAY: the cot came out of the garage and was photographed
