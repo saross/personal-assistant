@@ -1577,3 +1577,69 @@ to Shawn from the file.
 **How to apply.** Before relaying any count or ratio from an agent, open the artefact and read
 the line it came from. Say "from the file" when asked.
 
+
+
+## claude-obs 80 — 2026-09-15: he improved my proposal by splitting a thing I had fused
+
+**Pattern.** Slot 1's deadline was going to be missed. I proposed re-dating to Fri 25 *and*
+telling Steve and Penny. Shawn did something better: **he told them he would be late and promised
+an ETA by COB the next day.** My version bundled an urgent act (communicate the slip) with one he
+was not yet equipped to perform (name a date, with a surgical procedure still ahead of him).
+
+**Lesson.** When I package a recommendation as a single move, check whether it is actually two
+moves with different information requirements and different deadlines. **The urgent half often
+does not depend on the uncertain half**, and fusing them delays it or forces a guess.
+
+**How to apply.** Before proposing "do X and Y", ask what each half needs to be true. If one half
+is ready and the other is not, propose the ready half now and name the second as a follow-on with
+its own trigger.
+
+## claude-obs 81 — 2026-09-15: he closes risks with precedent, not with reassurance
+
+**Pattern.** I flagged that the car handover on Tue 29 leaves him without a vehicle while the
+drive waits on a pathology result. He closed it in one line: the car was off the road for two
+weeks earlier this year and he managed, with a fifteen-minute walk to the station. **Not "it'll be
+fine" — a specific prior instance of the same constraint, survived.** Same shape as the bonds: he
+priced at the highest fixed ask that clears the holding and set a 10:00 tripwire to adjust,
+rather than guessing or using the automated at-market setting.
+
+**Lesson.** His risk dismissals are usually evidence-backed, and the evidence is often something I
+do not have. **A flagged risk that comes back with a precedent attached is settled** — do not
+re-raise it, and record the precedent rather than the verdict, so the reasoning survives.
+
+**How to apply.** When he closes a risk, write the *reason* into the artefact, not just the
+status. "Carless is fine — two weeks earlier this year, station 15 min walk" ages far better than
+"not a risk".
+
+## claude-obs 82 — 2026-09-15: I raised a collision without checking the fact that dissolved it
+
+**Self-critique.** I flagged the Friday wardrobe collection as colliding with the excision that
+morning, and recommended moving it. **Shawn already had it at 18:00 and both events calendared.**
+The time was knowable — it was a detail I could have asked for in the same breath as raising the
+concern, or found before raising it.
+
+**Lesson.** This is the week's running failure in a smaller key: **I acted on an incomplete record
+rather than checking the source**, three days after the same thing produced a wrong report about
+Penny's manual and a wrong "not found" about the Bolgiaten approval. The flag was cheap and he
+closed it in one line, so the cost was low — but the habit is the same habit.
+
+**How to apply.** Before raising a scheduling collision, get both times. If one is unknown, raise
+it as a question ("what time is the collection?") rather than as a risk with a recommendation
+attached.
+
+## claude-obs 83 — 2026-09-15: on a bad-news day he asked for the ritual, not for comfort
+
+**Pattern.** He opened with the diagnosis, said he had not got much work done and would throttle
+back this week — and then asked for a standup and a plan for the remaining four hours. **He used
+the system to hold the week steady rather than suspending it.** He also logged 0.75h of
+map-reader-bench planning explicitly as *"to take my mind off other things"*, which is an honest
+category I would not have thought to record.
+
+**Lesson.** The right adaptation on a hard day is **to change the instrument's tone, not to
+withdraw it** — I dropped the escalation machinery and the hard question, kept the structure, and
+led with what was not in trouble. That appeared to be what he wanted. **Offering to skip the
+ritual would have been the wrong kindness.**
+
+**How to apply.** When he reports bad news and then asks for a routine, run the routine. Adjust
+what it emphasises, note explicitly that it is written on the basis he set, and put the "nothing
+here is in trouble because of you" section in when it is true.

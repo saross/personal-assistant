@@ -1889,3 +1889,37 @@ the checkable number.**
 **Applies to.** Any listing, and more broadly any claim where a published figure exists and the
 reader can reach it faster than we can defend an estimate.
 
+
+
+## Obs — 2026-09-14: two agents priced the same item independently and were wrong in the same direction
+
+**Setup.** A set of six used outdoor sling chairs. **Claude priced them at $90** against live
+Gumtree asks for comparable used chairs (fresh pairs asking $25–27.50 each). **Sol reviewed the ad
+independently and proposed $110**, citing $123 for four at Bunnings and $233 for six at Kogan.
+Two agents, separate contexts, converging on a band of $90–110.
+
+**Finding.** **Both were wrong, and wrong the same way.** A live check of the cheapest new
+comparable found **Bunnings sells a Marquee 7-Piece Steel Sling Back Setting — six stackable sling
+chairs PLUS a tempered-glass table — for $99** (4.2★, 575 reviews; verified on the product page,
+not the search listing). **Claude's $90 was 91% of a brand-new set with a table thrown in; Sol's
+$110 exceeded it outright.** Repriced to $75.
+
+**Why both missed it.** Both agents priced **per chair** and then multiplied. Neither asked what
+the cheapest thing that solves the buyer's problem costs — and for outdoor chairs that is a
+bundled setting, not six individual chairs. **The error was in a shared framing, so independent
+review could not catch it.**
+
+⭐ **The generalisable claim: agreement between independently-reasoning agents is evidence about
+variance, not about bias.** Two estimates converging tells you the estimate is stable; it tells
+you nothing about whether the frame is right. **Only an external anchor moves a shared-framing
+error.** Cross-reads catch arithmetic and omissions; they do not catch a question both parties
+forgot to ask.
+
+**Corroboration from the same campaign.** Every price anchored against a published figure has been
+right; **all three that were waved through on a band were wrong** — a keg asked above new retail
+(7 Sept), a bike $80 high (12 Sept), and these chairs (14 Sept). See
+`data/notes/move/listing-copy.md` and the 2026-09-07 entry above on ratio-to-replacement.
+
+**How to apply.** When two reviewers agree, treat that as a prompt to find the external anchor,
+not as a reason to stop looking. **Name the substitute good explicitly**: "what is the cheapest
+thing a buyer could buy instead?" — and check that, not the item.

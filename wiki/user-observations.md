@@ -2841,3 +2841,28 @@ worth confirming that is a preference rather than politeness.
 candidates A–D (compressibility argument, the $5,300 reframe, the point-feature correction, the
 calendar-blocks question) were surfaced at the start of this session and never adjudicated.
 Also pending: **2026-08-25 (SOL)**, **2026-09-03 (Slack dashboard)**, **2026-09-02→03 (RDA IG)**.
+
+
+## 2026-09-12→15 (PA — listings, W37 review, sale collapse, diagnosis) — Drafted candidates (pending review)
+
+**Candidate A — I checked Sol's review instead of deferring to it or defending my own number.**
+You brought Sol's ad review with a price of $110 against my $90. I went and looked at the live
+market rather than splitting the difference or arguing, and found a $99 new six-chair-plus-table
+setting that made both of us wrong. ⚠ **Worth recording whether that was the useful response, or
+whether you would rather I had simply adopted the second opinion and moved on** — the check cost
+about ten minutes and changed the price by $35 on an item you had already decided was low-stakes.
+
+**Candidate B — the three retrieval failures, and whether the corrections were worth the noise.**
+On Monday I reported Penny's manual as fourteen days silent when it had arrived five days
+earlier, and reported the Bolgiaten approval as not found when it was in your inbox. I then wrote
+both corrections up prominently, in the standup and the continuity log. **Useful accountability,
+or am I spending your attention on my own errors at a time when you have less of it to spend?**
+
+**Candidate C — the standup on the diagnosis day.** I dropped the escalation machinery and the
+hard question, said explicitly that it was written on the basis you had set, and added a section
+on what was *not* in trouble. **Did that land, or would you have preferred the normal instrument?**
+
+**Candidate D — flagging collisions you had already handled.** I raised the car handover (you had
+already renegotiated it) and the wardrobe collection (you had it at 18:00 and calendared). Both
+were closed in one line each. **Is that the right hit rate for a risk flag — cheap to dismiss, so
+worth raising on incomplete information — or is it noise in a week when you are throttling?**
