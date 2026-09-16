@@ -2281,7 +2281,12 @@ procedure has not happened).** ⇒ **New hard commitment: the ETA, by COB Wed 16
 brokerage, funds transferring Wed. ⭐ **Lloyds term deposits LIQUIDATED — the bank confirmed there
 is NO WAY TO TRANSFER**, exactly as the conditions implied (no assignment clause; condition 3.1.3
 bars withdrawals in-term; an early closure pays into the holder's *own* servicing account). Funds
-by end of week. ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
+by end of week. ⚠⚠ **CORRECTED 2026-09-16: THIS IS WRONG AND WAS ACTED ON.** Sophie's condition
+is **confirmation of cash ON HAND — in a transaction account — sufficient to transfer $350k to
+Adela**, not "bonds sold". **As at Wed 16 the bonds have NOT settled (CMC confirmed T+2 →
+Thu 17) and the Lloyds deposit has NOT liquidated** (one business day quoted Tue; expected
+Wed evening AEST). **Cash on hand Thu 17 at the earliest.** ❓ **Unverified: whether the
+combined proceeds clear $350k at all — no figure is recorded in `notes/move/`.** ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
 drafting question died with the liquidation — the orders need no transfer-at-maturity wording.**
 `notes/move/lloyds-term-deposits.md` records the break-cost arithmetic for next time (0.1% of
 balance per remaining full month, min £50, **accrued interest kept**).
@@ -2307,7 +2312,9 @@ self-mount; `wiki/daily-sync-lock-leak-2026-09-14.md`).
 **Held over / open:**
 - ⏰⏰ **WED 16: the ETA to Steve and Penny, by COB.** The one promise with a name on it.
 - ⏰ **WED 16: transfer the bond funds** · **tell Sophie the cash position** (her draft was due
-  about now and cash-ready was her condition).
+  about now and cash-ready was her condition). ⚠ **2026-09-16: the transfer CANNOT happen
+  today — bond settlement is T+2, i.e. Thu 17, and Lloyds has not liquidated.** Tell Sophie
+  the honest timeline instead: cash on hand Thu/Fri.
 - ⏰ **Bart's fuller report on the second-look couple — ask for a NUMBER, not an impression.**
   A $50k gap and a $200k gap are different conversations.
 - **Deck-chair dimensions** → edit the live Gumtree ad (W/D/H, seat height, **armrest height**).
