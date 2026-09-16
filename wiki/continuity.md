@@ -2285,13 +2285,20 @@ by end of week. ⚠⚠ **CORRECTED 2026-09-16: THIS IS WRONG AND WAS ACTED ON.**
 is **confirmation of cash ON HAND — in a transaction account — sufficient to transfer $350k to
 Adela**, not "bonds sold". **As at Wed 16 the bonds have NOT settled (CMC confirmed T+2 →
 Thu 17) and the Lloyds deposit has NOT liquidated** (one business day quoted Tue; expected
-Wed evening AEST). **Cash on hand Thu 17 at the earliest.** ✅ **COVERAGE CONFIRMED 2026-09-16
-(Shawn): Lloyds = USD 200,000, bonds = ~AUD 248,000.** The AUD side alone leaves a **$102,000
-shortfall**, so **only ~USD 62–73k needs converting, not the full 200k.** ⭐ **Coverage does
-not depend on the exchange rate** — it clears at any USD/AUD above **0.51**, so there is no FX
-risk to the $350k itself, only to how much of it the spread eats. ⚠ **NEW RISK IN ITS PLACE:
-the Lloyds leg is an international transfer, so "cash on hand in a transaction account" is
-gated on settlement AND an inbound transfer — verify that leg before giving Sophie a date.** ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
+Wed evening AEST). **Cash on hand Thu 17 at the earliest.**
+
+⛔⛔ **THE OBLIGATION IS USD-DENOMINATED — CORRECTED 2026-09-16 (Shawn), and it reverses the
+earlier reading twice over.** **Adela receives USD 350,000, not AUD 350,000.** Lloyds supplies
+**USD 200,000 already in USD** (no conversion, no exposure); the remaining **USD 150,000 must
+be bought with the ~AUD 248,000 of bond proceeds.** ⚠⚠ **This is NOT rate-independent — it is
+the opposite.** **Break-even is AUD/USD 0.6048**; below that the bonds do not cover the USD
+150,000 at all. Shawn's expected **~AUD 30k leftover implies AUD/USD ≈ 0.688**, i.e. a buffer
+of only **≈12%**, and **every 1 cent of AUD/USD is worth ≈AUD 3,600** of that leftover.
+⇒ ⭐ **He owes USD and holds AUD: the exposed tranche is exactly the USD 150,000, and it stays
+exposed until converted.** Consent orders are not yet drafted, so the transfer could be weeks
+out — **decide when to fix the rate, rather than letting it drift by default.**
+⚠ **Spread matters too: converting AUD 248,000 costs ~AUD 1,240 at a specialist (~0.5%) versus
+AUD 6,200–9,920 at typical retail bank rates (2.5–4%).** ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
 drafting question died with the liquidation — the orders need no transfer-at-maturity wording.**
 `notes/move/lloyds-term-deposits.md` records the break-cost arithmetic for next time (0.1% of
 balance per remaining full month, min £50, **accrued interest kept**).
