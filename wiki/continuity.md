@@ -2285,8 +2285,13 @@ by end of week. ⚠⚠ **CORRECTED 2026-09-16: THIS IS WRONG AND WAS ACTED ON.**
 is **confirmation of cash ON HAND — in a transaction account — sufficient to transfer $350k to
 Adela**, not "bonds sold". **As at Wed 16 the bonds have NOT settled (CMC confirmed T+2 →
 Thu 17) and the Lloyds deposit has NOT liquidated** (one business day quoted Tue; expected
-Wed evening AEST). **Cash on hand Thu 17 at the earliest.** ❓ **Unverified: whether the
-combined proceeds clear $350k at all — no figure is recorded in `notes/move/`.** ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
+Wed evening AEST). **Cash on hand Thu 17 at the earliest.** ✅ **COVERAGE CONFIRMED 2026-09-16
+(Shawn): Lloyds = USD 200,000, bonds = ~AUD 248,000.** The AUD side alone leaves a **$102,000
+shortfall**, so **only ~USD 62–73k needs converting, not the full 200k.** ⭐ **Coverage does
+not depend on the exchange rate** — it clears at any USD/AUD above **0.51**, so there is no FX
+risk to the $350k itself, only to how much of it the spread eats. ⚠ **NEW RISK IN ITS PLACE:
+the Lloyds leg is an international transfer, so "cash on hand in a transaction account" is
+gated on settlement AND an inbound transfer — verify that leg before giving Sophie a date.** ⇒ **Sophie's stated condition for the consent-orders draft is satisfied, and the
 drafting question died with the liquidation — the orders need no transfer-at-maturity wording.**
 `notes/move/lloyds-term-deposits.md` records the break-cost arithmetic for next time (0.1% of
 balance per remaining full month, min £50, **accrued interest kept**).
