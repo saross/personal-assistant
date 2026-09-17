@@ -3308,6 +3308,19 @@ the interim beacon's merge terms to "Shawn merges", which records
 Shawn's own instruction; asked GPT to flag such changes explicitly in
 future. Lows deferred (a policy bullet belongs in the shared guidance;
 HTTPS implicit in the fetch line).
+**Critical-friend review of map-reader-bench (2026-09-17, requested by
+Shawn via GPT):** fresh-context Opus review of PR #2 at 75427ba posted
+as a PR comment. Six required corrections (three high: Gemini-specific
+box convention vs the provider-neutral claim; undocumented expert
+centre convention vs "complete glyph including rays" box centres —
+the single most important pre-run fix, measurable offline; calibration
+covers two of four variants and test is 81% one variant), five
+simplifications (~5,500 of ~8,500 lines serve dropped or deferred
+procedures), six scientific decisions for Shawn (ten passes; higher
+concurrency; a named primary endpoint; operational headline with abort
+rule; keep one-family but state v1 resolves burial mounds; prespecify
+the bootstrap). Evidence reproduced: 278 tests, all digests, allocation
+arithmetic. Merge is Shawn's.
 
 ### 2026-09-10 (Thu, latest AUDIT) — AUDIT CLOSED: THIRTY-SIX PRS MERGED, R2 PUSH AND PHASE 1 RESTORED, FOLLOW-UPS DEFERRED
 
