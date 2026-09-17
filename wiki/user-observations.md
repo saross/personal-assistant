@@ -2866,3 +2866,31 @@ on what was *not* in trouble. **Did that land, or would you have preferred the n
 already renegotiated it) and the wardrobe collection (you had it at 18:00 and calendared). Both
 were closed in one line each. **Is that the right hit rate for a risk flag — cheap to dismiss, so
 worth raising on incomplete information — or is it noise in a week when you are throttling?**
+
+
+## 2026-09-16→18 (PA — ETA correction, USD settlement, zbook repair, house sequencing) — Drafted candidates (pending review)
+
+**Candidate A — "check what we already recorded" is the instruction that fixes retrieval-first."**
+Twice this session the useful answer was in a file and I reasoned instead: the shelving price
+(Lou's $500 was already recorded) and the ARDC prep question (which Shawn phrased as *"could I
+confirm whether or not we have any plan?"* — a retrieval request, answered correctly because he
+framed it that way). **The contrast is the observation: when he asked me to check, I checked;
+when he asked me to advise, I reasoned.** Possible rule: phrase questions about tracked things
+as confirmation requests, not advice requests.
+
+**Candidate B — the draft-versus-sent distinction needs to survive into the record, not just the
+send.** The standing rule ("Claude drafts, Shawn sends") worked — he deleted my draft and wrote
+his own. **But I then treated my draft as the record of what was committed**, and propagated
+Fri-25-both-sites into six files. The rule protected the outbound message and did nothing to
+protect the record of it. Possible addition: after Shawn sends his own version, Claude reads it
+at source and records *that*, never the draft.
+
+**Candidate C — an unverified risk-flag costs more than it looks.** Two of three concerns raised
+against the house plan were wrong (packers, settlement runway), and Shawn had to spend a reply
+correcting each. Worth his verdict on whether the flags were still net-useful (they did surface
+the one real issue) or whether the noise was the dominant effect.
+
+**Candidate D — the standup's hard question landed twice, and once it was aimed wrong.** The
+house question produced the sequencing rule. The avoidance question on Slot 1 was based on a
+misreading of FOCUS.md's three items as parallel. Worth his verdict on whether a wrong hard
+question is a cheap price for the right ones, or whether it erodes the ritual.
