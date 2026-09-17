@@ -2255,6 +2255,147 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-16→18 (Wed 16 → Fri 18 Sept, latest PA) — THE PROMISE WAS KEPT AND I GOT ITS CONTENTS WRONG; SIX CORRECTIONS IN THREE DAYS, EVERY ONE A RECORD READ AS A SOURCE
+
+⭐⭐ **THE SESSION'S ONE LESSON, AND IT FIRED SIX TIMES: A RECORD IS NOT A SOURCE.** Every
+substantive error in three days had the same shape — a derived artefact (my own draft, a
+continuity line, a stale plan row, an installed package list) trusted in place of the thing it
+described. **All six were caught, four by Shawn, two by reading the source.** They are logged
+individually below because the *pattern* is the finding, not any one instance.
+
+⛔⛔ **THE BIGGEST: I asserted the contents of a message I did not send and did not read.** I
+drafted an ETA to Steve and Penny proposing **Fri 25, both sites**. **Shawn deleted the draft
+and wrote his own** (#marketing, 2026-09-16 23:01:16): *"one top-level page left for a close
+edit, then the individual feature and case-study pages… **Monday** for a fully edited **product
+site (Fieldmark)**. I'll then look at the company site or the eRA materials, whichever is more
+important."* ⇒ **THE REAL COMMITMENT IS MON 21, PRODUCT SITE ONLY — earlier and narrower than
+the draft.** I propagated the draft's date into the standup, the recap, the work log and the
+packing plan as though it were the commitment; **corrected across six files 2026-09-17** once
+Shawn said *"no, yesterday I told them I'd finish the product website by Monday."*
+⇒ ⭐⭐ **Items 2 and 3 of Slot 1 (Elevate legal documents, company site) are now EXPLICITLY
+CONDITIONAL — they compete with the eRA materials and carry no date.** The slot heading still
+reads FINISH BOTH SITES; the external commitment no longer does.
+
+⛔⛔ **THE SETTLEMENT IS USD-DENOMINATED, AND I HAD IT BACKWARDS.** **Adela receives USD 350,000**,
+not AUD. Lloyds supplies **USD 200,000 already in USD**; the remaining **USD 150,000 must be
+bought with ~AUD 248,000 of bond proceeds.** ⇒ ⚠⚠ **This is NOT rate-independent — I had said it
+was.** **Break-even AUD/USD 0.6048**; Shawn's expected ~AUD 30k leftover implies **≈0.688**, so
+the buffer is **≈12%** and **every cent is ≈AUD 3,600**. ⇒ **He owes USD and holds AUD: the
+exposed tranche stays open until converted, and the consent orders are weeks away.** ⭐ **The
+practical gate is the RAIL, not the decision** — converting $150k through an unused provider
+needs days of verification at that size.
+
+⛔ **SOPHIE'S CONDITION WAS RECORDED AS SATISFIED AND WAS NOT.** The 2026-09-15 entry said the
+cash precondition was met. Her actual condition is **cash ON HAND and transferable**, not "bonds
+sold" — and on Wed 16 neither the bonds (T+2) nor Lloyds had cleared. **Corrected in place.**
+✅ **RESOLVED THU 17: bonds settled, transfer initiated, and Sophie notified WITH A SCREENSHOT of
+the confirmation** — her condition was *confirmation*, and evidence is what closes it.
+⏰ **Lloyds liquidates FRI 18 — the fourth estimate against one business day quoted Tue 15.**
+
+⭐⭐ **THE WEEK'S REAL WORK LANDED ANYWAY.** **EFN 10.25h**, the heaviest line: **all top-level
+product-site pages edited except the legal ones** (evaluate, custom, contact, security,
+accessibility; the evaluate form replaced with a prefilled mailto), ⭐ **a placeholder that would
+have shipped caught on the accessibility page**, and ⭐⭐ **Steve's review actioned the same day
+it arrived** — a correctness sweep at 08:26 and **a new `features/templates.mdx` at 17:36**
+answering his *"mention templates more"*. **New scope absorbed inside the day it appeared.**
+⏰ **Remaining: 10 child pages** (six `features/`, four `case-studies/`) **plus the new templates
+page**, against **MON 21**.
+
+⭐ **FOUR FAIMS3 PRs FILED with Steve's prior permission** — `#2321` CITATION.cff · `#2322` root
+LICENSE + manifest · `#2327` AUTHORS · ⏰⏰ **`#2328` SPDX identifiers across 292 files,
++519/−4,069.** Branch-and-PR on a collaborative repo, permission first: the rule followed
+exactly. **#2328 rots fastest — any commit to those 292 files conflicts.** Waiting-for row filed
+with the departure stake named.
+
+⭐⭐ **THE HOUSE: Shawn's sequencing rule, and it is the keeper.** Answering *"what is the actual
+state of the house?"* he was straight — *"the house isn't sorted, I've focused on large items and
+opportunistic clearing of drawers/shelves"* — and named **"drop everything and pack" from MON 21**.
+⭐ **The ordering: DISPOSAL first, then MELBOURNE packing, and STORAGE items STAGED — sitting out
+or neatly on shelves — for the professional packers, not packed by him.** ⭐ **Why it is right:
+the two categories needing his own hands are the two with immovable dates** (kerbside Mon 28 is
+the only pickup; Melbourne items go in the van he drives), **and storage has no September
+deadline because the container moved to an October return trip.** ⇒ **The rule generalises: when
+a deadline-bearing task and a deadline-free task compete, do not do the deadline-free one to a
+higher standard than it needs.** `notes/move/packing-week-plan.md`.
+
+⚠ **TWO OF THE THREE RISKS I RAISED AGAINST THAT PLAN WERE WRONG.** **(1) Red Truck WILL PACK, at
+an hourly rate** — I cited a *"no firm identified"* line that was stale twice over. **(2) The
+settlement runway is ample, not tight** — Shawn's arithmetic: the consent orders cannot be filed
+until the cash lands, itself **2–3 weeks**, with a normal settlement **~6 weeks** after. ⭐ **The
+cash precondition currently blocking him is the same thing that buys the runway.** Only the third
+stands, and he ruled it: staged items show at the open homes, *"I can only do so much."*
+
+⭐ **RED TRUCK BILLING CONFIRMED AND THE 1 SEPT QUOTE HELD WITHIN $50.** Uplift **$2,000 now**;
+storage **two weeks free, then $12/day for six months, then $10/day**; delivery **~$2,400
+Canberra / ~$2,800 Melbourne**, now **unbundled and deferred**. **$12/day ≈ $365/month.**
+⭐ The file's own 1 Sept warning — *"space that is cheap per m³ quietly resurrects items that
+already failed the keep test"* — **fired on 12 Sept exactly as written**; logged as a hit.
+
+⭐⭐ **ZBOOK RECOVERED — AND IT DOES NOT BOOT WITH GRUB.** HP replaced the failed motherboard and
+left the machine reboot-looping. ⭐ **Root cause: not a missing boot entry, a missing boot
+ORDER** — `Boot0000 \EFI\ubuntu\shimx64.efi` existed and worked, but `BootOrder` read
+`0003,0006,…` without it, so firmware walked USB → raw NVMe → network and looped. Fixed with
+`efibootmgr -o`; **verified set, NOT yet verified against a cold boot.**
+⛔ **I concluded GRUB twice and was wrong twice** — `grub-efi-amd64` is installed, `/boot/grub/
+grub.cfg` exists (stale), `zz-update-grub` is in the hooks, **and none of it is in the boot
+path.** **The truth: shim → `\EFI\ubuntu\grubx64.efi`, which is a ~100 MB systemd-ukify
+Unified Kernel Image under GRUB's filename.** Decisive tests: **`StubInfo`/`StubFeatures`/
+`StubPcrKernelImage` in efivars** (systemd-stub, never GRUB) and **no `BOOT_IMAGE=` in
+`/proc/cmdline`**. **Shawn said "I'm sure we weren't using grub" and was right.**
+⇒ Documented in `data/global-claude-md/network-resources.md` @ `b0c43a5`; memory
+`2026-09-16-ed5b98a22410`.
+⭐ **Bluetooth: all five pairings orphaned by a new adapter MAC** (38:8D:3D:BD:31:01 WNC →
+D8:5B:27:48:01:58 MediaTek MT7925). **`bluetoothctl devices` returning EMPTY is the diagnostic
+tell.** Memory `2026-09-16-3d4ddb93e22a`.
+⚠ **The Claude-app URI handler was NOT board-swap fallout** — the app rewrote its own desktop
+file at 18:34 and never refreshed the database; `update-desktop-database` fixed it. **Adjacency
+to a big change is not evidence.**
+
+✅ **THE daily-sync FIX 2 GATE HAS LIFTED.** zbook has pulled fix 1 — commit `21fe4e9` verified
+in its history, `9>&-` present twice in `scripts/daily-sync.sh`. **Fix 2 (untrack the lock file)
+is now safe to land.** Fix 3 still needs Shawn's call on how loud.
+
+⚠ **TWO CONCURRENT-SESSION COLLISIONS, both resolved without loss** — a second session working
+Steve's comments and FAIMS3 licensing pushed to `pa-data` and to the parent. The second was a
+**submodule-pointer conflict**; resolved by verifying their pointer was an *ancestor* of mine
+before keeping mine. **`memories.jsonl` was autostashed rather than swept into my commits.**
+
+**Held over / open:**
+- ⏰⏰ **MON 21: fully edited PRODUCT site.** 10 child pages + `templates.mdx`. Windows: Sat 19
+  (open home 13:15), Sun 20, Mon 21 around the 09:00 interview.
+- ⛔⛔ **ARDC SECOND INTERVIEW MON 21 09:00 — and THERE IS NO PREP PLAN.** Confirmed by search,
+  not assumed. What exists: **`cv-and-applications/docs/interview-capability-inventory.md`**
+  (255 lines, last touched **2026-08-06** — written for the *application*, not a panel), the
+  brief, the PD, the cover letter, the evidence pack. **Shawn has dedicated SUNDAY AFTERNOON.**
+  ⭐⭐ **THE UNUSED ASSET, surfaced 2026-09-18 and recorded NOWHERE ELSE: the calendar invite
+  names the panel — Dee Deveson Lucas (Manager, Design & Delivery), Julie McCusker (PMO
+  Manager), Jon Smillie (Manager, Expertise).** ⇒ **The panel is a better position description
+  than the position description** — PMO probes governance/reporting/risk, Design & Delivery
+  probes delivery and stakeholders, Expertise probes domain credibility. **Take this to
+  `cv-and-applications` on Sunday; it is not written down there.**
+- ⏰ **FRI 18: wide local excision 15:15**, wardrobe collection 18:00, Lloyds funds land.
+  **Stitches ~Mon 28; pathology gates departure (~29–30 Sept earliest).**
+- ⚠ **zbook COLD BOOT still untested** — Shawn will power-cycle at home. **If `BootOrder`
+  reverts, write `\EFI\ubuntu\BOOT.CSV` (UTF-16LE) so `fbx64.efi` rebuilds the entry.**
+- ⚠ **amd-tower is 30 COMMITS BEHIND on `fieldmark-product-website`** — all website work is on
+  zbook. **Pull before touching the site from amd-tower.**
+- ⏰ **FX: set up the conversion rail now**, even if converting later; ask about a **forward**.
+- ⏰ **Bundle buyer (probably Lou) — get a DATE, propose Sat 26.** He holds the $770 bundle on a
+  **$50 deposit** and the stated pickup window (wk of 14 Sept) has passed. ⭐ **Shelving: his own
+  $500 from 11 Sept is the anchor — make the shared trip the sweetener, not the price.**
+  ⚠ **Do not sell the marble table or the 2 dining chairs again at the Sat 26 sale.**
+- ⏰ **#2328 (292 files) — chase Steve before departure**, or it becomes a rebase job from
+  Melbourne mid-unpack.
+- **Deck-chair dimensions — FIFTH day.** **Sale ad to Facebook groups + Marketplace — NINTH.**
+- ⚠ **W38 weekly review NOT run** (latest on file: `reports/weekly/2026-W37.md`).
+- ⚠ **`index-session-content` gate has still NEVER run on amd-tower**; **archive-drift gate: one
+  session unarchived** — both flagged at session start on 16 Sept and neither addressed.
+- **Four user-obs candidate sets pending**: 2026-09-06→08, 2026-09-12→15, and this session's.
+
+**Hours: 09-16 = 7.5h · 09-17 = 6.75h · 09-18 = in progress. W38 to date 21.75h over four days.**
+⚠ **Monday's stated intent to throttle back did not hold on any day since.**
+
+
 ### 2026-09-15 (Tue, latest PA) — A MELANOMA DIAGNOSIS MOVED THE DEPARTURE, AND THE FEATURES PAGE LANDED ANYWAY
 
 ⛔⛔ **A mole removed at last week's annual skin check is a MELANOMA — stage 0, in situ.** **Wide
