@@ -1643,3 +1643,59 @@ ritual would have been the wrong kindness.**
 **How to apply.** When he reports bad news and then asks for a routine, run the routine. Adjust
 what it emphasises, note explicitly that it is written on the basis he set, and put the "nothing
 here is in trouble because of you" section in when it is true.
+
+## claude-obs 84 — 2026-09-18: he corrected me six times in three days, and every correction was cheap because he made it immediately
+
+**Pattern.** Sophie's condition, the settlement currency, the ETA contents, GRUB-vs-UKI (twice),
+the packers, the settlement runway. In every case Shawn corrected the moment he saw the claim —
+*"no, it's the other way"*, *"I'm sure we weren't using grub"*, *"no, yesterday I told them…"* —
+rather than letting it stand and compound. **Three of the six had already propagated into files
+by the time he caught them**, and correcting six files took ten minutes; correcting them next
+week would have meant a wrong commitment date sitting in FOCUS.md through the interview and the
+move.
+**Lesson.** His immediate-correction habit is doing load-bearing work in this system. The cost
+of my errors is proportional to how long they sit, not to how wrong they are.
+**How to apply.** When he corrects something, fix *every* propagated instance in the same turn
+and say how many there were — the count is what tells him whether the correction reached the
+whole record. Grep before claiming it is done.
+
+## claude-obs 85 — 2026-09-18: he answers an accountability question with a plan, not a defence
+
+**Pattern.** Asked *"what is the actual state of the house?"* — a deliberately uncomfortable
+question — he replied *"the house isn't sorted"* and then produced a complete sequencing rule:
+disposal, then Melbourne, with storage **staged rather than packed** because the packers are
+paid to pack and storage has no September deadline. Same shape when the avoidance reading was
+wrong: he stated the actual priority order and moved on, without arguing about the framing.
+**Lesson.** The hard question works on him because he treats it as a prompt to think, not as an
+accusation to rebut. That is unusual and it is why the confrontational tone is earned rather
+than merely permitted.
+**How to apply.** Ask the uncomfortable question plainly and then *get out of the way* — no
+softening preamble, no offered excuses. And when the answer contains a reusable rule, write the
+rule down where it will be found again, not just the answer.
+
+## claude-obs 86 — 2026-09-18: I twice manufactured a risk that the record already dissolved
+
+**Pattern.** I flagged "no packing firm is booked" from a stale plan row — Red Truck packs at an
+hourly rate. I flagged "a short settlement breaks the staging plan" — his own arithmetic gives
+~8–9 weeks of runway. Both flags were raised *before* checking whether the concern survived
+contact with what he already knew. Related: claude-obs 82, same failure the week before.
+**Lesson.** Raising a risk feels like diligence and costs nothing to say, which is exactly why
+it needs the same verification bar as a claim. An unchecked warning spends his attention and
+teaches him to discount the checked ones.
+**How to apply.** Before flagging a risk, ask "what would have to be true for this to be a real
+problem, and have I checked it?" If the check is one grep or one question, do it first. If it
+cannot be checked, say "I have not verified this" in the same sentence as the flag.
+
+## claude-obs 87 — 2026-09-18: the useful move on the shelving was retrieval, not reasoning
+
+**Pattern.** Asked about pricing the wire shelving, the instinct was to reason about used-goods
+markets and replacement cost. The inventory row already contained the answer: **Lou's own $500
+offer from 11 Sept**, the reframe that the 18 cut-to-fit glass shelves are the real asset, and
+the hard "gone before 28 Sept" constraint. Generic reasoning would have produced a lower number
+and left ~$200 on the table.
+**Lesson.** In a system this heavily recorded, the highest-value first action on almost any
+question is retrieval. The record is dense enough that reasoning from priors is usually the
+*worse* method, not merely a slower one.
+**How to apply.** On any question touching a tracked entity — an item, a person, a commitment,
+a machine — read its row or file *before* forming a view. Treat "what do we already have on
+this?" as the default opening move rather than a fallback.
