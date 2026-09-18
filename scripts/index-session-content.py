@@ -507,6 +507,13 @@ def index_archive(archive_root: Path, project: str | None,
         )
         raise IndexerAbort(3, f"cannot connect to PostgreSQL: {exc}") from exc
 
+    # Set the transaction mode BEFORE the first query. psycopg2 refuses to
+    # change ``autocommit`` while a transaction is open, and the schema
+    # check below opens one implicitly -- with the assignment after the
+    # check, every run since 2026-09-08 died with "set_session cannot be
+    # used inside a transaction" before the gate was ever written.
+    conn.autocommit = False
+
     # Refuse to write against a schema shape this script was not written
     # for: session_chunks' columns and its (archive_path, turn_idx) unique
     # key are exactly what the INSERT below depends on.
@@ -517,7 +524,6 @@ def index_archive(archive_root: Path, project: str | None,
         conn.close()
         raise IndexerAbort(2, f"schema-version mismatch: {exc}") from exc
 
-    conn.autocommit = False
     files_indexed = files_skipped = total_chunks = 0
     refused_now = refused_remembered = 0
     nuls_stripped = 0
