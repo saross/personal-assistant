@@ -39,7 +39,7 @@ round cap below, and stops at anything that needs him. Ruled 2026-09-07.
    is not a slug ending in `.md` (letters, digits, `.`, `_`, `-`) is never
    listed at all (the archiver names such refusals in the daily-sync log).
 2. Note the monitor's task id. Tell Shawn it is armed, which project it
-   watches, and that the cap is six autonomous rounds or sixty minutes,
+   watches, and that the cap is twelve autonomous rounds or two hours,
    whichever comes first.
 
 ### On each event
@@ -71,9 +71,16 @@ round cap below, and stops at anything that needs him. Ruled 2026-09-07.
 
 ### Cap
 
-After **six rounds** or **sixty minutes** since Shawn's last message, stop
+After **twelve rounds** or **two hours** since Shawn's last message, stop
 acting on further events. Leave the monitor running so nothing is lost,
 summarise the exchange so far, list what is waiting on Shawn, and wait.
+
+Raised from six rounds and sixty minutes on 2026-09-22, on Shawn's
+instruction: *"I'd be happy for 12 rounds and two hours, I haven't seen any
+unwanted drift in longer conversations."* The escalation list above is
+unchanged and is what actually bounds an exchange — the cap governs volume,
+not permission, and a single event touching that list still stops the
+session immediately, however few rounds have passed.
 
 ### Disarm
 
