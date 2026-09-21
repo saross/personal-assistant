@@ -710,12 +710,23 @@ permanent allow-list.
 Shawn remains the configured Git author. Material GPT assistance uses:
 
 ```text
-Co-Authored-By: GPT (OpenAI Codex) <shawn@faims.edu.au>
+Co-Authored-By: GPT (OpenAI Codex) <SHAWN_GIT_EMAIL>
 ```
 
-This canonical string uses Shawn's configured primary Git address. Record the
-final Claude and GPT trailer strings in
-`global-claude-md/git-reference.md` and the Codex equivalent.
+`SHAWN_GIT_EMAIL` is a placeholder for Shawn's configured primary Git address,
+which is **deliberately not spelled out here** — this file is public, and a
+literal address in a public document is a small standing invitation to scrapers
+and to copy-paste misattribution (redacted 2026-09-21, the same day a
+hard-coded address was found in the lit-scout request headers). Read the real
+value from the local Git configuration:
+
+```bash
+git config user.email
+```
+
+Record the final Claude and GPT trailer strings in
+`global-claude-md/git-reference.md` and the Codex equivalent — as a documented
+convention naming the placeholder, not as a literal address.
 
 Do not encode a changing model identifier in hand-authored Git identities.
 Claude's harness-supplied trailer is model-versioned
