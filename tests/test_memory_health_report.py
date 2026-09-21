@@ -1041,6 +1041,53 @@ class TestTheVerdictMatchesTheDocumentedExitCodes:
         assert report["integrity"]["only_in_postgres"] == 1
         assert clean is False
 
+    def test_an_archived_row_in_postgres_is_not_an_orphan(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """The standing false FAIL, fixed 2026-09-21.
+
+        Archiving evicts a record from live JSONL and deliberately leaves its
+        (inactive) PostgreSQL row behind. Counting every PG-only id as an
+        orphan therefore failed the report on the archive working exactly as
+        designed: 4,684 PG\\live, all 4,684 archived, 0 true orphans. A
+        standing FAIL with nothing behind it trains the operator to ignore the
+        verdict, which is worse than having no check.
+        """
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True},
+            {"id": "archived-1", "is_active": False},
+        ]))
+        monkeypatch.setattr(
+            mhr._audit_mod, "_read_archive_partition_ids",
+            lambda archive_dir, logger: {"archived-1"},
+        )
+        report, clean = _build()
+        # The raw divergence stays visible — a real orphan must not be able to
+        # hide behind the archive.
+        assert report["integrity"]["only_in_postgres"] == 1
+        assert report["integrity"]["orphans"] == 0
+        assert clean is True
+
+    def test_an_unarchived_postgres_only_row_still_fails(
+        self, report_paths, fake_pg, monkeypatch,
+    ) -> None:
+        """The control: the fix must not swallow a genuine orphan."""
+        _write_corpus(report_paths, [_anchored(id="m-1")])
+        fake_pg(FakeDatabase(memories=[
+            {"id": "m-1", "is_active": True},
+            {"id": "archived-1", "is_active": False},
+            {"id": "ghost-1", "is_active": True},
+        ]))
+        monkeypatch.setattr(
+            mhr._audit_mod, "_read_archive_partition_ids",
+            lambda archive_dir, logger: {"archived-1"},
+        )
+        report, clean = _build()
+        assert report["integrity"]["only_in_postgres"] == 2
+        assert report["integrity"]["orphans"] == 1
+        assert clean is False
+
     def test_the_unsynced_tail_does_not_fail_the_report(
         self, report_paths, fake_pg,
     ) -> None:

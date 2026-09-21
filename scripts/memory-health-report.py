@@ -777,7 +777,11 @@ def render_report(report: dict[str, Any]) -> list[str]:
         f"  live\\PG (#55 tail)       : {i['only_in_canonical']}   "
         "(normal unsynced tail; cron drains every 5 min)"
     )
-    out.append(f"  PG\\live                 : {i['only_in_postgres']}")
+    out.append(
+        f"  PG\\live                 : {i['only_in_postgres']}"
+        f"   (orphans: {i.get('orphans', 'n/a')} — PG rows that are neither "
+        "live nor archived; only these fail the verdict)"
+    )
     ap = i.get("archive_parity")
     if ap:
         out.append(
@@ -1028,14 +1032,36 @@ def build_report(
                 "archived_not_in_pg": parity.archived_not_in_pg,
                 "leaked_active": len(parity.leaked_active),
             }
+        # A PG row with no live JSONL line is only an ORPHAN if the record is
+        # not in the cold-store archive either. Archiving deliberately evicts a
+        # record from live JSONL while its PG row stays (inactive) — so counting
+        # every PG\live id as an orphan fails the report on the archive working
+        # exactly as designed, which is what it did from 2026-09-09 (bccc9a8)
+        # until this fix. Measured 2026-09-21: 4,684 PG\live, 4,684 of them
+        # archived, 0 true orphans, 0 leaked-active — a standing FAIL with
+        # nothing behind it, which is worse than no check at all because it
+        # trains the operator to ignore the verdict.
+        orphans: int | str
+        try:
+            archive_ids = _audit_mod._read_archive_partition_ids(
+                ARCHIVE_DIR, logger
+            )
+        except Exception:  # noqa: BLE001 — archive unreadable is not fatal here
+            logger.warning(
+                "archive partition unreadable; reporting PG\\live as orphans"
+            )
+            archive_ids = set()
+        orphans = len((pg["ids"] - live_ids) - archive_ids)
         integrity.update(
             only_in_canonical=only_in_canonical,
             only_in_postgres=only_in_postgres,
+            orphans=orphans,
             archive_parity=archive_parity_dict,
         )
     else:
         integrity.update(
-            only_in_canonical="n/a", only_in_postgres="n/a", archive_parity=None
+            only_in_canonical="n/a", only_in_postgres="n/a", orphans="n/a",
+            archive_parity=None
         )
 
     # Integrity is clean iff: no dup-ids, a quarantine count that is both
@@ -1055,7 +1081,8 @@ def build_report(
         # failed the report while this expression ignored both directions
         # (round 4f-3, finding L6); the unsynced tail stays exempt, the
         # orphan does not. "n/a" means PostgreSQL was unreachable.
-        and integrity["only_in_postgres"] in (0, "n/a")
+        # Orphans, NOT raw PG\live — see the note where ``orphans`` is computed.
+        and integrity.get("orphans", integrity["only_in_postgres"]) in (0, "n/a")
         and (archive_parity_dict is None or archive_parity_dict["leaked_active"] == 0)
     )
     integrity["clean"] = clean
