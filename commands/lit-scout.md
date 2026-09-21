@@ -214,3 +214,19 @@ scope: 2022-present; include preprints
   context. The Claude Code harness forbids nested sub-agent dispatch
   (docs/sub-agents.md line 469). Serial dispatch from the main
   conversation is the only realisable path.
+
+## Polite-pool contact address (optional)
+
+CrossRef and OpenAlex give faster, more reliable service to callers who
+identify themselves with a contact address — their "polite pool". The scripts
+read that address from the environment and **no address is hard-coded**:
+
+```bash
+export LIT_SCOUT_MAILTO='you@example.org'   # or CROSSREF_MAILTO
+```
+
+Leave it unset and everything still works, just in the common pool. Setting it
+to someone else's address would misidentify you to third-party APIs, which is
+exactly the bug this replaced (2026-09-21, reported by Brian Ballsun-Stanton:
+a maintainer's institutional address was baked into the request headers, so
+anyone running the scripts unmodified identified themselves as him).

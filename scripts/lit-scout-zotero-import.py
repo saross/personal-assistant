@@ -89,8 +89,43 @@ import httpx
 CROSSREF_BASE = "https://api.crossref.org"
 OPENALEX_BASE = "https://api.openalex.org"
 DATACITE_BASE = "https://api.datacite.org"
-MAILTO = "shawn@faims.edu.au"
-USER_AGENT = "lit-scout-zotero-import/1.0 (mailto:shawn@faims.edu.au)"
+def _resolve_mailto() -> str | None:
+    """
+    Contact address sent to CrossRef and OpenAlex, read from the environment.
+
+    CrossRef and OpenAlex operate a "polite pool" — faster, more reliable
+    service for callers who identify themselves. That is the only purpose this
+    value serves.
+
+    It is deliberately NOT hard-coded: a baked-in address means anyone running
+    this script unmodified identifies themselves to third-party APIs as whoever
+    is written into the source. Set ``LIT_SCOUT_MAILTO`` (or ``CROSSREF_MAILTO``)
+    to your own address to join the polite pool; unset, the script still works
+    in the common pool.
+    """
+    for name in ("LIT_SCOUT_MAILTO", "CROSSREF_MAILTO"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+MAILTO = _resolve_mailto()
+USER_AGENT = (
+    f"lit-scout-zotero-import/1.0 (mailto:{MAILTO})"
+    if MAILTO
+    else "lit-scout-zotero-import/1.0"
+)
+
+
+def _polite(params: dict | None = None) -> dict:
+    """Add the polite-pool ``mailto`` when configured; never send ``None``."""
+    out = dict(params or {})
+    if MAILTO:
+        out["mailto"] = MAILTO
+    else:
+        out.pop("mailto", None)
+    return out
 HTTP_TIMEOUT = 30.0
 
 ZOTERO_SQLITE = Path.home() / "Zotero" / "zotero.sqlite"
@@ -643,7 +678,7 @@ def fetch_crossref(doi: str, client: httpx.Client) -> dict | None:
     try:
         r = _request_with_retry(
             lambda: client.get(
-                url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT
+                url, params=_polite(), timeout=HTTP_TIMEOUT
             ),
             host=_host_of(url),
             source="crossref",
@@ -670,7 +705,7 @@ def fetch_openalex(doi: str, client: httpx.Client) -> dict | None:
     try:
         r = _request_with_retry(
             lambda: client.get(
-                url, params={"mailto": MAILTO}, timeout=HTTP_TIMEOUT
+                url, params=_polite(), timeout=HTTP_TIMEOUT
             ),
             host=_host_of(url),
             source="openalex",

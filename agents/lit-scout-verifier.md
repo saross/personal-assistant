@@ -162,7 +162,7 @@ DOI directly against the registry:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  -H 'User-Agent: lit-scout/1.0 (mailto:shawn@faims.edu.au)' \
+  -H "User-Agent: lit-scout/1.0 (mailto:${LIT_SCOUT_MAILTO:-you@example.org})" \
   "https://api.crossref.org/works/<doi>"
 ```
 

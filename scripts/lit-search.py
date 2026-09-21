@@ -37,13 +37,50 @@ import httpx
 # Configuration
 # ============================================================================
 
-MAILTO = "shawn@faims.edu.au"
-USER_AGENT = f"lit-scout/1.0 (mailto:{MAILTO})"
+def _resolve_mailto() -> str | None:
+    """
+    Contact address sent to CrossRef and OpenAlex, read from the environment.
+
+    CrossRef and OpenAlex both operate a "polite pool" — faster, more reliable
+    service for callers who identify themselves with a contact address. That is
+    the ONLY purpose this value serves.
+
+    It is deliberately NOT hard-coded. A baked-in address means every person who
+    runs this script unmodified identifies themselves, to third-party APIs, as
+    whoever happens to be written into the source. Set ``LIT_SCOUT_MAILTO`` (or
+    ``CROSSREF_MAILTO``) to your own address to join the polite pool; leave it
+    unset and the scripts still work, just in the common pool.
+    """
+    for name in ("LIT_SCOUT_MAILTO", "CROSSREF_MAILTO"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+MAILTO = _resolve_mailto()
+USER_AGENT = (
+    f"lit-scout/1.0 (mailto:{MAILTO})" if MAILTO else "lit-scout/1.0"
+)
 
 # API base URLs
 CROSSREF_BASE = "https://api.crossref.org"
 S2_BASE = "https://api.semanticscholar.org/graph/v1"
 OPENALEX_BASE = "https://api.openalex.org"
+
+
+
+def _polite(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    Add the polite-pool ``mailto`` to *params*, or leave it out when no
+    contact address is configured. Never sends ``mailto=None``.
+    """
+    out = dict(params or {})
+    if MAILTO:
+        out["mailto"] = MAILTO
+    else:
+        out.pop("mailto", None)
+    return out
 
 
 def _env_float(name: str, default: float) -> float:
@@ -893,7 +930,7 @@ def cmd_metadata(doi: str, client: httpx.Client) -> dict:
         client,
         f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
         "openalex",
-        params={"mailto": MAILTO},
+        params=_polite(),
     )
     if data and "id" in data:
         record = _normalise_openalex(data)
@@ -989,7 +1026,7 @@ def cmd_references(
         client,
         f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
         "openalex",
-        params={"mailto": MAILTO},
+        params=_polite(),
     )
     if data and "referenced_works" in data:
         # Audit 2026-05-02 (D-M5): truncate to the user's `--limit`, not
@@ -1004,10 +1041,9 @@ def cmd_references(
             # `per_page` is capped at OPENALEX_PER_PAGE_MAX (200) by the API;
             # if the user asks for more, page the filter via cursor.
             id_filter = "|".join(ref_ids)
-            base_params = {
+            base_params = _polite({
                 "filter": f"openalex:{id_filter}",
-                "mailto": MAILTO,
-            }
+            })
             results = _openalex_paginate(
                 client,
                 f"{OPENALEX_BASE}/works",
@@ -1069,7 +1105,7 @@ def cmd_citations(
         client,
         f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
         "openalex",
-        params={"mailto": MAILTO, "select": "id"},
+        params=_polite({"select": "id"}),
     )
     if oa_data and "id" in oa_data:
         oa_id = oa_data["id"]
@@ -1081,11 +1117,10 @@ def cmd_citations(
         results = _openalex_paginate(
             client,
             f"{OPENALEX_BASE}/works",
-            {
+            _polite({
                 "filter": f"cites:{oa_id}",
                 "sort": "cited_by_count:desc",
-                "mailto": MAILTO,
-            },
+            }),
             limit=limit,
         )
         for work in results:
@@ -1145,11 +1180,10 @@ def cmd_search(
         client,
         f"{OPENALEX_BASE}/works",
         "openalex",
-        params={
+        params=_polite({
             "search": query,
             "per_page": str(limit),
-            "mailto": MAILTO,
-        },
+        }),
     )
     if data and "results" in data:
         for work in data["results"]:
@@ -1179,7 +1213,7 @@ def cmd_openalex_cited_by(
         client,
         f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(doi, safe='')}",
         "openalex",
-        params={"mailto": MAILTO, "select": "id,cited_by_count"},
+        params=_polite({"select": "id,cited_by_count"}),
     )
     if not oa_data or "id" not in oa_data:
         log.warning("Could not resolve DOI %s in OpenAlex", doi)
@@ -1198,11 +1232,10 @@ def cmd_openalex_cited_by(
     raw_results = _openalex_paginate(
         client,
         f"{OPENALEX_BASE}/works",
-        {
+        _polite({
             "filter": f"cites:{oa_id}",
             "sort": "cited_by_count:desc",
-            "mailto": MAILTO,
-        },
+        }),
         limit=limit,
     )
     if not raw_results:
