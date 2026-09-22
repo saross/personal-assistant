@@ -58,12 +58,12 @@ admitted_by = "shawn"
             candidate.write_text(text)
             return verifier.load_policy(candidate)
 
-    def test_live_policy_admits_exactly_the_two_reviewed_lanes(self) -> None:
-        """Two real admissions, every field pinned.
+    def test_live_policy_admits_exactly_the_three_reviewed_lanes(self) -> None:
+        """Three real admissions, every field pinned.
 
-        map-reader-llm (2026-09-11) and map-reader-bench (2026-09-13). A
-        further admission must extend this assertion deliberately, with its
-        own review.
+        map-reader-llm (2026-09-11), map-reader-bench (2026-09-13), and
+        cv-and-applications (2026-09-22). A further admission must extend
+        this assertion deliberately, with its own review.
         """
         self.assertEqual(self.policy.get("admitted_clones", []), [{
             "id": "codex-map-reader-llm-phase2",
@@ -87,9 +87,20 @@ admitted_by = "shawn"
             "clone_mode": "full-single-branch",
             "admitted_on": "2026-09-13",
             "admitted_by": "shawn",
+        }, {
+            "id": "codex-cv-and-applications-entry",
+            "agent": "codex",
+            "repository": "~/Code/cv-and-applications",
+            "lane_path": "~/worktrees/cv-and-applications/sol-cv-entry",
+            "remote": "https://github.com/saross/cv-and-applications.git",
+            "branch_namespace": "sol/*",
+            "storage": "independent-clone",
+            "clone_mode": "full-single-branch",
+            "admitted_on": "2026-09-22",
+            "admitted_by": "shawn",
         }])
 
-    LIVE_ADMISSIONS = 2   # the fixture below is appended to the live policy
+    LIVE_ADMISSIONS = 3   # the fixture below is appended to the live policy
 
     def test_well_formed_admission_is_accepted(self) -> None:
         policy = self.load_with(self.ADMISSION)

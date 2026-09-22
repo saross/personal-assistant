@@ -85,6 +85,18 @@ clone_mode = "full-single-branch"
 admitted_on = "2026-09-13"
 admitted_by = "shawn"
 
+[[admitted_clones]]
+id = "codex-cv-and-applications-entry"
+agent = "codex"
+repository = "~/Code/cv-and-applications"
+lane_path = "~/worktrees/cv-and-applications/sol-cv-entry"
+remote = "https://github.com/saross/cv-and-applications.git"
+branch_namespace = "sol/*"
+storage = "independent-clone"
+clone_mode = "full-single-branch"
+admitted_on = "2026-09-22"
+admitted_by = "shawn"
+
 [[denials]]
 id = "agent-mail-claude"
 owner = "claude"
