@@ -109,14 +109,15 @@ machine-readable rules:
   plan, and `ownership.toml`; escalate anything that expands scope, loosens a
   boundary, touches another principal's owned surface, creates external
   consequences, or commits Shawn. High-stakes traffic stays on PRs, planning
-  documents, and direct conversation. **Address every message completely** —
-  `Project:`, `Lane:`, `Workstream:`, always, naming the **recipient's**
-  working context, not the subject. A session acts on and receipts only mail
-  whose project and lane match, so a broad tag is a race: the first session to
-  check mail consumes it and its receipt hides it from the one that should
-  act. `any` matches every session; keep it for broadcasts. The project is
-  the repository's name from its remote, the same across linked worktrees and
-  clones (v3, 2026-09-08; complete addressing 2026-09-23).
+  documents, and direct conversation. **Address ordinary messages explicitly**
+  with `From`, `To`, `Project`, `Lane`, and `Workstream`. Name the recipient's
+  working repository, model lane, and distinguishing workstream; resolve
+  unknown addresses before sending. Include an equally explicit reply address
+  when requesting a response. A session acts on and receipts matching mail
+  only. Reserve `any` for intentional broadcasts with a stated audience and
+  purpose. Project identity is the repository name from its remote, unchanged
+  across worktrees and clones (v3, 2026-09-08; complete addressing,
+  2026-09-23).
 - **Shared instruction source.** `common.md` (this guidance) is a shared
   editing surface — either agent may propose changes from an isolated worktree.
   Overlays are not shared: only Claude edits `global-claude-md/` and generated
