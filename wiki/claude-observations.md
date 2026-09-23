@@ -1699,3 +1699,53 @@ question is retrieval. The record is dense enough that reasoning from priors is 
 **How to apply.** On any question touching a tracked entity — an item, a person, a commitment,
 a machine — read its row or file *before* forming a view. Treat "what do we already have on
 this?" as the default opening move rather than a fallback.
+
+## claude-obs 88 — 2026-09-23: I turned a plan into a slip three times, and compression did the damage
+
+**Pattern.** Three times in three days I described settled or scheduled work as a slip: the
+moving-sale ad as *"pending nine days"* when it was live with 91 visits; the banners as *"zero
+chase"* when Shawn had chased by Slack that morning; the consent orders as *"deferred once"* when
+they arrived the previous evening and Wednesday was always the plan. Each time the error entered
+by reusing **my own earlier sentence** rather than re-reading state, and **each restatement was
+harsher than the one before** — a qualified line became an unqualified accusation in two hops.
+The third fed a confrontational Hard Question that had to be withdrawn.
+**Lesson.** The anti-confabulation rule is usually framed around facts — numbers, paths, hashes.
+This is the same failure applied to *characterisations of state*, which feel like framing rather
+than claims and so skip the check. **Compression is the accelerant:** a summary of a summary drops
+the qualifier that made the original true.
+**How to apply.** Before repeating any characterisation of whether something is late, stalled,
+chased, or done, open the file that holds current state. Treat "still pending", "not done",
+"again", and "second day" as claims requiring the same verification as a commit hash. Never
+re-summarise my own prior summary — go back to source.
+
+## claude-obs 89 — 2026-09-23: Shawn dissolves deadlines by finding the fallback, and it works twice
+
+**Pattern.** Two constraints that had driven planning for days evaporated once he asked what
+happens if the primary route fails. The shelving had "must be gone before Mon 28 kerbside" —
+until a van and a recycling centre made the true deadline the move itself, converting an unbounded
+risk into part of a van day. The Salvos decision looked like a forecasting problem — *what will
+sell on Saturday?* — until "keep" became the default and the walk-through only had to clear a
+floor. **In both cases the hard thing was not the work; it was a constraint nobody had tested.**
+**Lesson.** A deadline that rests on an assumed-only exit is not a deadline. The expensive move is
+optimising against it; the cheap move is asking what the fallback costs. Shawn reaches for this
+naturally and it has now paid twice in one week.
+**How to apply.** When a date is driving pressure, ask "what is the second exit, and what does it
+cost?" **before** helping plan against the first. If the fallback is bounded and affordable, say so
+— that is usually more valuable than any scheduling help.
+
+## claude-obs 90 — 2026-09-23: a time between two fixed things is a different object from a time in a day
+
+**Pattern.** The inbox was asked for four days running and grew 67 → 78 across them, despite being
+named as a commitment each morning. What changed on the fifth attempt was not resolve but shape:
+*"30 minutes today at 5pm, after EFN things and before an evening jog."* Bounded on **both** sides
+— it cannot expand because the jog ends it, and cannot be crowded out because the EFN work precedes
+rather than competes. **It still did not fire on time** (the EFN catch-up moved for Steve's UK
+timezone and ran long) **but it was displaced, not dropped, and ~20 minutes happened later.**
+**Lesson.** "I'll do X today" and "I'll do X between A and B" are not the same commitment. The
+second has an enforcement mechanism that is not willpower. The same week showed the converse: the
+items that executed within minutes of being decided (the ad's 12:00 finish, naming the shelving)
+were the ones with no scheduling question at all.
+**How to apply.** When something has slipped repeatedly, stop restating it and ask what it sits
+between. Propose an anchor rather than a time. And when a slot is displaced by a fixed thing
+moving, say so explicitly — that is a different diagnosis from avoidance, and conflating them is
+how claude-obs 88 happens.

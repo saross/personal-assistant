@@ -2255,6 +2255,123 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-19→23 (Sat 19 → Wed 23 Sept, latest PA) — THE PRODUCT SITE SHIPPED EARLY, THE SHELVING DEADLINE DISSOLVED, AND I TURNED A PLAN INTO A SLIP THREE TIMES
+
+⭐⭐ **THE WEEK'S RESULT: the Fieldmark PRODUCT WEBSITE FINISHED SUN 20, a day ahead of the Mon 21
+commitment to Steve and Penny.** Ten child pages plus a new templates page, at ~15 min per page.
+**The first externally dated commitment met early in weeks.** ⇒ Slot 1 was then **restructured
+into six tasks** on Shawn's own division, after 35 days under a *"finish both sites"* heading
+that could not register a closure. ⭐ **His structural insight is the keeper: "shepherd X through
+review" is its own task, twice** — which is exactly what let item 1 read as done while 32
+sign-offs sat untouched.
+
+⭐⭐ **THE SHELVING DEADLINE DISSOLVED, and the reasoning generalises.** It was the campaign's one
+unbounded risk — no storage, too large for the container, "must be gone before Mon 28 kerbside".
+Shawn found an exit needing no buyer: keep it advertised, then a van at the move and, if need be,
+the recycling centre. ⇒ **Mon 28 was never the real deadline; it only looked like one while
+kerbside was assumed to be the last exit.** **A hard deadline resting on an assumed-only disposal
+route is not hard — find the fallback before optimising against the date.**
+
+⛔⛔ **MY OWN FAILURE, THREE TIMES IN THREE DAYS, ONE SHAPE.** I turned a plan or a decision into a
+slip by reusing my own earlier phrasing instead of re-reading current state, and **each
+restatement compressed harsher than the last**: (1) the moving-sale ad — *"pending nine days"*
+when it was **live on Gumtree with 91 visits**; (2) the banners — *"zero chase"* when Shawn had
+**chased by Slack that morning**; (3) the consent orders — *"deferred once, unreviewed for a
+second day"* when they **arrived Tuesday evening and Wednesday was always the plan.** The third
+carried a confrontational Hard Question built on the false premise; **it was withdrawn.**
+⇒ **Asking a confrontational question from a false premise is worse than asking none** — it
+spends credibility the real ones need. See claude-obs 88.
+
+⭐ **SETTLEMENT: the cash chain completed and the exposure narrowed to a known number.** Lloyds
+liquidated Fri 18 (**ONE deposit, now at call in an Instant Saver, USD 203,922.98 — currency
+confirmed**), CMC→Macquarie ~AUD 250k landed Mon 21. ⇒ **The USD 200,000 carries NO exchange-rate
+risk, being already in the currency of the obligation; the exposure is only the remaining
+USD 150,000.** Break-even 0.6048 against ~0.688; every cent ≈ AUD 3,600.
+**Draft consent orders arrived Tue evening from Sophie** → Shawn reviewed Wed via an **Astra
+verification run** → **sent to Adela the same evening.** ⭐ **The workflow is a CONSOLIDATION
+chain, not parallel reviews:** his comments → Adela (+ update to Sophie) → her comments → the
+consolidated set to Sophie, so **she receives one document.**
+⏰ **FX RAIL RESEARCHED, NOT OPENED: OFX and TorFX** — both ASIC-licensed, segregated client
+funds, both offering **forward contracts**, which is the feature the situation needs. **Wise
+ruled out despite being the obvious name: no forwards, no relationship manager.**
+⚠ **Unverified, ask directly: forward deposits (~5–10%) and whether a top-up can be demanded if
+the rate moves. Shawn's settlement date depends on a court, so DATE FLEXIBILITY matters more than
+for a normal customer.**
+
+⭐ **COSMOS VENTURES IS A GO.** Brian met Tue 22; he **will not take a career hiatus**, so the only
+available structure is a **research-consultancy buyout of his Macquarie time plus approved outside
+work**. **Brian is named co-founder.** ↻ **I invented an institutional lead-time risk and built
+two inbox rows on it** — corrected the same evening: **no formal MQ process until pre-seed**, just
+flag intent, and **the benefits arrive with the obligations** (Incubator access).
+⇒ **Tailwind ruled a lower priority**; its 19–20 Sept window passed unused (verified against the
+time log). **One more look, then in or out.**
+
+⭐ **ARDC PANEL INTERVIEW HELD MON 21 09:00** (Deveson Lucas, McCusker, Smillie). Shawn: three of
+six answered really well, three adequately, no unexpected questions. **Contact expected "later
+this week"; nothing yet.** Prep was built Sun from a session plan in `cv-and-applications`.
+
+⭐ **PAPER B PARKED PROPERLY.** Portal checked at source: **"undergoing peer review"**, no desk
+rejection, **no email had arrived**. ⇒ **Do not chase.** ⭐ Shawn's reading of the journal's own
+metric settled it: *time to first decision* (~19 days) is the **triage** decision, not a completed
+round, so the manuscript went to reviewers ~mid-August and real review time began ~1 Sept — **~3
+weeks in, which is early.** **Trigger moved Thu 24 Sept → FRI 30 OCT**, anchored to the end of
+eResearch Australasia. *(I mis-read that metric twice and was corrected both times.)*
+
+**INFRA — three fixed, all verified at source:**
+- ⭐ **`index-session-content` had crashed on EVERY run since 8 Sept** — `conn.autocommit` set
+  *after* a query opened a transaction (`psycopg2` refuses). Fixed `3bb790e`; catch-up indexed
+  **34 files / 2,044 chunks**. The gate had read "never written" for ten days.
+- ⭐ **Memory-health integrity FAIL was a MIS-SPECIFIED CHECK, not a data problem** — all 4,684
+  PG-only ids are archived records; **0 true orphans, 0 leaked-active**, proven by set difference.
+  Verdict now keys on orphans. Fixed `b21d696`. ⇒ **A standing FAIL with nothing behind it is
+  worse than no check: it trains the operator to ignore the verdict.**
+- ⭐ **Anchor drift was NOT rising** — fresh sweep **18.8%** vs June's **18.4%**, absolute failures
+  **down** 1,452 → 1,247 on a corpus 4× larger. **The 28.2% reading was a measurement artefact:**
+  every repository-discovery fix landed **2026-09-09, three days after it**. The tell is
+  `recoverable` 808 → 204. ⚠ **What IS real: `absent` ~17% of anchors, up from 12.4% in June.**
+- ⛔ **Hard-coded contact address in the lit-scout request headers (Brian's report).** Shawn's
+  institutional address was in 12 outgoing call sites plus the User-Agent, in a **public** repo.
+  Now read from `LIT_SCOUT_MAILTO`/`CROSSREF_MAILTO` (`941950c`); address also redacted from a
+  public planning doc (`59078e5`). **Not deleted — it serves the CrossRef/OpenAlex polite pool.**
+- ⏰ **`recover_anchors.py --apply` BLOCKED, three attempts, nothing mutated.** 143 records / 195
+  rewrites / 125 false→true are waiting. **The tool cannot run from an active session** — the
+  extraction hook re-dirties the corpus within seconds and the guard requires it clean and pushed.
+  **Needs a genuine quiet window. Do NOT use the guard override.**
+
+⭐ **INBOX 78 → 61 in ~20 minutes** (six merges, ten archived supersessions). **Nothing cleared was
+work still owed.** **Pass 2 is captured as its own row** and owes: four inbox↔backlog duplicates,
+**three backlog triggers that FIRED months ago and were never acted on** (RDA WG on Paper B
+clearing, the reflect-and-prioritise session, the W34 link-check), and a **separate** staleness
+pass. ⚠ **Do not kill on dates alone — several stale rows are real work wearing a dead date.**
+
+⭐⭐ **THE WEEK'S OTHER RULING: 70% of the packing dropped.** The excision (Fri 18) left Shawn
+unable to grip with his **left** hand for two weeks. ⇒ **Disposal, not packing** — bounded by
+"up to the toaster oven". **Sale ends 12:00** (30-min reset before the 12:30 open house). **Storage
+and packing fully arranged through RED TRUCK** — one booking, confirmation held, **date TBD**.
+**Salvos pickup KEPT.** ⭐ **The Salvos reframe is worth keeping:** the walk-through never had to
+forecast Saturday's sales, only clear a floor.
+
+**Held over / open:**
+- ⏰ **Red Truck DATE is still TBD** — the last unscheduled item in the move chain. Must land
+  between **stitches out Fri 2 Oct** and the **Melbourne ceiling Sat 25 Oct.**
+- ⏰ **OFX + TorFX accounts not opened.** Verification takes days; Fri is a staging day.
+- ⏰ **Elevate checklist dated 1 OCT** — the only EFN item with an external date inside the move
+  crunch. ⚠ **Compliance list: five of seven items are "an afternoon each, and nothing breaks if
+  skipped" — exactly the category a relocation eats.**
+- ⏰ **Adela's consent-order feedback due Fri 25 AM Sydney.**
+- ⏰ **32 product-site banners** — four people, raised at the Wed EFN catch-up.
+- ⏰ **FAIMS3 #2328** (292 files) — still unchased, rots on any commit to those files.
+- ⏰ **Fri 25: post the STREET ADDRESS to the Gumtree ad**, as the ad promised 91+ viewers.
+- ⚠ **AB+ has NO skill and no slash command** — Brian asked and could not find it. It is a
+  project-local pipeline in the public `saross/map-reader-llm`. **The promote-to-a-skill backlog
+  row is 105+ days old and the cost has now landed on a colleague.**
+- ⚠ **archive-drift gate: 1 substantive session unarchived** — flagged at session start, not done.
+- ⚠ **Agent mail unread** for PA, plus **2 for `cv-and-applications`** (needs a session there).
+- **User-obs candidate sets pending: FOUR now** — 09-06→08, 09-12→15, 09-16→18, and this one.
+
+**Hours: 09-19 = 4.25 · 09-20 = 6.25 · 09-21 = 7.0 · 09-22 = 3.25 · 09-23 = 7.0.**
+**W38 closed at 40.25h (seven days, none off). W39 to date 17.25h.**
+
 ### 2026-09-16→18 (Wed 16 → Fri 18 Sept, latest PA) — THE PROMISE WAS KEPT AND I GOT ITS CONTENTS WRONG; SIX CORRECTIONS IN THREE DAYS, EVERY ONE A RECORD READ AS A SOURCE
 
 ⭐⭐ **THE SESSION'S ONE LESSON, AND IT FIRED SIX TIMES: A RECORD IS NOT A SOURCE.** Every

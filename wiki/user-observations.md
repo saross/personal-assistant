@@ -2894,3 +2894,30 @@ the one real issue) or whether the noise was the dominant effect.
 house question produced the sequencing rule. The avoidance question on Slot 1 was based on a
 misreading of FOCUS.md's three items as parallel. Worth his verdict on whether a wrong hard
 question is a cheap price for the right ones, or whether it erodes the ritual.
+
+## 2026-09-19→23 (PA — product site shipped, Cosmos go, settlement cash complete, three infra fixes) — Drafted candidates (pending review)
+
+*Shawn accepts / edits / discards / replaces. Silence holds these over; it never discards.*
+
+**Candidate A — the corrections were the useful part, and they cost something.**
+Three times this session Claude described settled work as a slip and had to be corrected. Each
+correction was cheap to make and the record is better for it — but the third one carried a
+confrontational Hard Question built on a false premise, which is not a neutral error. *Was the
+correction loop acceptable, or is the confrontational framing now doing more harm than good?*
+
+**Candidate B — verifying at source repeatedly changed the answer, not just confirmed it.**
+Checking rather than assuming overturned four things this week: the anchor-drift "rise" was a
+measurement artefact, the memory-health FAIL was a mis-specified check, the Lloyds "second
+deposit" was the same money, and the AB+ skill did not exist at all. *Is this worth the time it
+takes, or does it slow ordinary requests too much?*
+
+**Candidate C — the FX recommendation was the kind of help you cannot self-serve.**
+Shawn said outright *"I don't know anything about these services"*, and the answer that seemed
+most useful was not the cheapest provider but the **structural** one: the forward contract removes
+the risk, so Wise is wrong here despite being the obvious name. *Was the shape of that answer
+right — lead with the mechanism rather than the price comparison?*
+
+**Candidate D — Claude did not push back on the four-deliverable week.**
+On Monday Shawn added a fourth item to a week where he had just lost the use of one arm, and the
+hard question asked him to drop something. He answered it well (70% of packing). *But should the
+pushback have come earlier, at the point the fourth item was added rather than after?*
