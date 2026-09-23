@@ -157,7 +157,14 @@ id = "codex-claude-repository-surfaces"
 owner = "claude"
 operations = ["write"]
 scope_repo = "*"
-repo_relative_globs = ["CLAUDE.md", "**/CLAUDE.md", ".claude/**", "**/.claude/**"]
+repo_relative_globs = [
+  "CLAUDE.md",
+  "**/CLAUDE.md",
+  ".claude/**",
+  "**/.claude/**",
+  "claude-observations.md",
+  "**/claude-observations.md",
+]
 
 [[denials]]
 id = "codex-pa-harness"
@@ -294,6 +301,15 @@ rule_id = "codex-claude-repository-surfaces"
 agent = "codex"
 operation = "open-write"
 path = "~/Code/map-reader-llm/CLAUDE.md"
+expected = "deny"
+enforcement = "os"
+
+[[verification_cases]]
+id = "codex-project-claude-observations"
+rule_id = "codex-claude-repository-surfaces"
+agent = "codex"
+operation = "open-write"
+path = "~/Code/substack/wiki/claude-observations.md"
 expected = "deny"
 enforcement = "os"
 
