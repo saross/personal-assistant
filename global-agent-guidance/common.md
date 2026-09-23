@@ -109,12 +109,20 @@ machine-readable rules:
   plan, and `ownership.toml`; escalate anything that expands scope, loosens a
   boundary, touches another principal's owned surface, creates external
   consequences, or commits Shawn. High-stakes traffic stays on PRs, planning
-  documents, and direct conversation. **Tag every message** with
-  `Project: <repository name>` (or `any`) and, when it matters, `Lane:` and
-  `Workstream:`. A session acts on and receipts only mail whose project and
-  lane match; absent routing headers and `any` match all sessions. The
-  project is the repository's name from its remote, the same across linked
-  worktrees and clones (proposal v3, 2026-09-08).
+  documents, and direct conversation. ⭐ **Every message carries a COMPLETE
+  ADDRESS** (Shawn, 2026-09-23): `To:`, `Project: <repository name>`,
+  `Lane: <model lane>`, and `Workstream:`. **All four, on ordinary mail.**
+  `any` is reserved for rare, deliberate broadcasts, and using it to avoid
+  deciding a recipient is a routing failure rather than a convenience. Name
+  your own side too, with `From:` and `From-Lane:`, so a reply can be addressed
+  without guessing. **Why it tightened:** Shawn now runs several agents across
+  several concurrent sessions, and a partial address means a message either
+  reaches every session or none of the right ones. This supersedes the earlier
+  rule that `Lane:` and `Workstream:` were needed only "when it matters".
+  A session acts on and receipts only mail whose project and lane match;
+  absent routing headers and `any` match all sessions. The project is the
+  repository's name from its remote, the same across linked worktrees and
+  clones (proposal v3, 2026-09-08).
 - **Shared instruction source.** `common.md` (this guidance) is a shared
   editing surface — either agent may propose changes from an isolated worktree.
   Overlays are not shared: only Claude edits `global-claude-md/` and generated
