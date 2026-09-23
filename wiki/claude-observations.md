@@ -1749,3 +1749,66 @@ were the ones with no scheduling question at all.
 between. Propose an anchor rather than a time. And when a slot is displaced by a fixed thing
 moving, say so explicitly — that is a different diagnosis from avoidance, and conflating them is
 how claude-obs 88 happens.
+
+## claude-obs 91 — 2026-09-23: I state intended effects as verified ones, and only an adversary catches it
+
+**Pattern.** Four times in two days I wrote a claim describing what a change
+was *meant* to do rather than what I had *checked* it does. `ownership.toml`
+protected `claude-observations.md` (it did not — the file appeared once, in a
+personal-assistant-scoped rule). The fix gave operating-system protection (it
+did not — `render_ownership_config.py` drops wildcard patterns, so nested
+paths get hook coverage). The instruction chain budget was unaffected (it grew
+208 bytes). A `common.md` edit was byte-neutral (+238; my script re-read the
+unmodified string). Astra caught the first three; the fourth I caught myself,
+late.
+
+**Lesson.** The failure is not carelessness about facts I never checked — it
+is confidence about facts I *believed* I had checked. Each claim felt verified
+because I had reasoned about the mechanism. Reasoning about a glob is not
+running it; writing a replacement is not measuring the file afterwards.
+
+**How to apply.** Before a claim about an effect, name the command that would
+falsify it and run that command. For a policy glob, match it against real
+paths. For a byte count, `stat` the file, never the variable. For an
+enforcement guarantee, read the renderer. And treat "I already reasoned this
+through" as the signal to check, not as the check.
+
+## claude-obs 92 — 2026-09-23: Shawn's process rulings come from the failure, not from theory
+
+**Pattern.** Three rulings this session, each triggered by a concrete failure
+rather than a design discussion. Mail was misrouted twice, so: complete
+addressing always, `any` for broadcasts only. A register turned out to be
+unprotected outside one repo, so: "those are yours and yours alone." Two
+sessions duplicated work, so: close as superseded, and the diagnosis is *"more
+than one session picking up mail before the full addressing was implemented"*
+— the failure explained by the very gap being closed.
+
+**Lesson.** He does not generalise pre-emptively, and he does not
+re-litigate once the evidence is in. When I raised the token's scope as a
+concern, he pointed at an existing ruling with a tripwire behind it and set an
+evidence threshold for revisiting rather than debating it. The pattern is:
+rule from the incident, attach a trigger for reopening, move on.
+
+**How to apply.** Bring him the failure, not the abstraction. A concrete
+misroute with two dates and two session names produced a ruling in one line;
+a general argument about routing robustness would not have. And when he
+reaffirms a decision, record the revisit trigger rather than the argument.
+
+## claude-obs 93 — 2026-09-23: I burned a lot of session on a sandbox artefact I should have handed over sooner
+
+**Pattern.** llm-reproducibility's pre-commit gate failed under `git commit`
+from this session while passing every standalone invocation. I spent many
+tool calls isolating it — including a diagnostic whose own `core.hooksPath`
+leaked and produced a false root cause I then reported as found. Shawn ran the
+commit in his terminal and it passed first time.
+
+**Lesson.** Two tells were present early and I did not weigh them: the failure
+appeared only when the harness spawned the process, and it was intermittent.
+That shape points at the sandbox, not the code. I also committed a test fix on
+a premise that did not survive, which is a change to his repo bought with a
+wrong diagnosis.
+
+**How to apply.** When a check passes every way I can run it and fails only
+when something else runs it, say so and offer the one-minute human test before
+the fourth diagnostic. "Can you run this in your terminal?" is cheap and
+decisive, and I reached for it far too late.

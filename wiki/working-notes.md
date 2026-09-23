@@ -1923,3 +1923,27 @@ right; **all three that were waved through on a band were wrong** — a keg aske
 **How to apply.** When two reviewers agree, treat that as a prompt to find the external anchor,
 not as a reason to stop looking. **Name the substitute good explicitly**: "what is the cheapest
 thing a buyer could buy instead?" — and check that, not the item.
+
+## Obs — 2026-09-23: a policy glob can be true in the file and absent from the enforcement it was written for
+
+**Observation.** `ownership.toml` accepted `**/claude-observations.md` and the
+verifier validated it, but the Codex renderer never turned it into an
+operating-system grant. `config/render_ownership_config.py`'s `literal_base()`
+returns `None` for any pattern containing `*`, `?` or `[`, and
+`protected_paths()` under `scope == "*"` takes only names with no `/`. The
+code documents the constraint: Codex permission profiles reject recursive read
+globs on Linux, so `ownership_guard.py` carries recursive patterns instead.
+
+**Why it matters.** The policy file, its schema validator and its test suite
+all passed on a declaration that the enforcement layer silently dropped.
+`validate` reports *declared* enforcement labels — `os=13 tool-layer=6` — and
+those counts look like evidence while being only a census of intent. A
+verification case labelled `os` made it worse: the verifier routes that label
+into a raw `os.open` probe that no tool hook can mediate, so the case could
+never have failed in a way that revealed the gap.
+
+**Carry forward.** When a policy is consumed by a renderer someone else owns,
+validating the policy is not validating the protection. Read the consumer.
+And a verification case must be able to fail for the reason it exists — this
+one was additionally aimed at a primary checkout already outside the agent's
+writable roots, where a denial proves nothing at all.

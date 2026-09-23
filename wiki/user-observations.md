@@ -2921,3 +2921,36 @@ right — lead with the mechanism rather than the price comparison?*
 On Monday Shawn added a fourth item to a week where he had just lost the use of one arm, and the
 hard question asked him to drop something. He answered it well (70% of packing). *But should the
 pushback have come earlier, at the point the fourth item was added rather than after?*
+
+## 2026-09-22→23 (GPT onboarding — three repos, five lanes, four overclaims) — Drafted candidates (pending review)
+
+Drafted by Claude at handoff. Accept / edit / discard / replace. Silence holds
+them over; it does not discard them.
+
+**Candidate A — asking three scoped questions up front, rather than proposing
+a plan, set the whole session's shape.** Before touching anything I asked for
+lane scope, whether to split `CLAUDE.md` now, and how to frame GPT's first
+job. All three answers changed the work materially: "not yet" on the split
+would have let GPT write a competing policy file, which the bench admission
+record explicitly warns against. Worth knowing whether the three-question
+opening was useful or felt like friction on a task you'd already scoped.
+
+**Candidate B — "please merge" with no further comment was the efficient
+move, and I should read it as trust rather than terseness.** Four times you
+said merge and nothing else. Each time I verified head, mergeability and merge
+convention before acting, then reported the commit. If that verification is
+noise rather than reassurance, say so and I will just merge and report.
+
+**Candidate C — you cut a debate I was extending.** On the token's scope I
+raised a concern, you pointed at the existing ruling and its tripwire, and
+that ended it. I had been building toward a recommendation to narrow the
+token. Your close was correct and faster than where I was heading. Possibly
+worth generalising: when I raise something already ruled on, say "already
+ruled, here's the trigger" rather than letting me re-derive it.
+
+**Candidate D — the sandbox debugging cost you real time and I did not offer
+the cheap human test early enough.** You eventually ran the commit yourself
+and it passed immediately. If a "try it in your terminal" offer would have
+been welcome three tool calls in rather than ten, that is a habit worth
+forming — I currently treat handing work back as a last resort rather than a
+diagnostic.

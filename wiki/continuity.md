@@ -2255,6 +2255,98 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-22→23 (Mon 22 → Wed 23 Sept, latest GPT) — THREE REPOS ONBOARDED TO CODEX, FIVE LANES ADMITTED, AND THE REVIEWER CAUGHT ME OVERCLAIMING THREE TIMES
+
+⭐ **GPT (Astra) is now enabled in three more repositories: cv-and-applications,
+substack, and llm-reproducibility.** Five admitted lanes total, up from two.
+Live policy `valid schema=2 rules=9 cases=19 clones=5 os=12 tool-layer=7`.
+
+**What "enabling GPT in a repo" turned out to mean.** Five pieces, three owners:
+a harness-neutral `docs/agent-guidance.md` split out of `CLAUDE.md` (Claude's);
+an `[[admitted_clones]]` entry (Claude authors, GPT reviews, Shawn signs off);
+host clone preparation and permission activation (GPT pins, Shawn runs); a
+repo-local `AGENTS.md` (GPT's, write-denied to Claude); and a Codex session
+launched in the lane. The split is the part that resists automation — each
+repo needed real judgement about what was harness-specific, and
+llm-reproducibility's policy was threaded with Claude tool names that had to
+become harness-neutral rules rather than move verbatim.
+
+**Merged this session:** PA #161 (cv-and-applications admission, `11f55a78`),
+#162 (substack + llm-reproducibility batched, `cfa8ed7e`), #163
+(claude-observations.md reserved across repositories, `ecb13d86`), #164
+(complete agent-mail addressing, `c26df67e`). #165 closed as superseded.
+Repo commits: `cv-and-applications@4a9d2f8`, `substack@562ffc36`,
+`llm-reproducibility@637e232` plus `09e9e44`, and PA `7a4d2e1`.
+
+⚠⚠ **THE SESSION'S REAL LESSON: Astra caught me overclaiming three times, and
+every one was an intended effect stated as a verified one.** (1) I wrote that
+`codex-claude-repository-surfaces` protected `wiki/claude-observations.md`; it
+did not — the file appeared once in the whole policy, inside a
+personal-assistant-scoped rule. (2) I then claimed the fix gave
+operating-system protection; `render_ownership_config.py` drops every
+wildcard-bearing pattern, so nested registers get hook-layer coverage only.
+(3) I said the instruction chain budget was unaffected when it grew by the
+same 208 bytes as the global. **A fourth was mine alone:** I reported a
+`common.md` edit as byte-neutral because my measuring script re-read the
+unmodified string — the real figure was +238.
+
+⇒ **The cross-agent review loop is working and should not have to carry this
+much.** Each error would have entered the record as fact without it.
+
+**Batching worked.** One `ownership.toml` PR for two lanes: one review, one
+sign-off, one test-assertion extension. Worth repeating; the per-PR ceremony
+is identical whether it carries one entry or five.
+
+**Two mechanisms fixed along the way.**
+
+- **Read receipts.** Writes to `~/agent-mail/claude/seen/codex/` had been
+  refused twice at the permission layer, so Astra's messages stayed
+  permanently unread and resurfaced at every session start and watch re-arm.
+  Cause was a missing allow rule, not policy. `scripts/mail-receipt.py`
+  (`7a4d2e1`) now writes only into that subtree and refuses every other
+  destination, allow-listed as exactly one command rather than a blanket `cp`.
+- **Addressing.** Two lane-admission requests went out `Project: any,
+  Lane: any`, which matches every session; a map-reader-bench session consumed
+  one and a cv-and-applications session the other, and each receipt then hid
+  the message from the gpt-hub session that should have acted. Shawn ruled
+  addressing is always complete. The merged wording is largely Astra's own.
+
+**Open, in priority order.**
+
+- ⏳ **Astra renders the #162 permission diff** — unblocked; PA
+  `git worktree list` is clean as of `7a8c45f`. Then Shawn runs clone
+  preparation and activation. The substack and llm-reproducibility lane paths
+  are still absent, so the activation diff is not ready until they exist.
+- ⏳ **`AGENTS.md` for substack and llm-reproducibility** — GPT's to write from
+  each repo's shared guidance. Not drafted by Claude this time, deliberately.
+- ⛔ **fieldmark-docs-staging cannot have a lane.** It is org-owned
+  (`FAIMS/fieldmark-docs-staging`), SSH origin, and outside the token's
+  `saross`-only scope. Needs a credential decision first. Its policy split was
+  not done and is still worth doing independently.
+- ⏳ **`From-Lane:` in the addressing rule** — deferred by Shawn; inbox row
+  2026-09-23. Must fit ~350 bytes of remaining Codex global headroom.
+- ⏳ **`credential-grants.toml` correction** — line 23 says "selected
+  repositories"; the live token is all-repos-owned-by-saross. `expiry_note`
+  also claims `check-credentials.py` verifies the record against the live
+  token when it cross-checks expiry against one hardcoded probe repo. Shawn's
+  evidence threshold for narrowing: unwanted actions, **or** a
+  model-generation change.
+- ⏳ **`/onboard-gpt` skill** — deferred until one or two more runs.
+- ❓ **`llm-reproducibility@09e9e44`** — a test-isolation fix I made on a
+  premise that did not hold. Defensible on its own terms; Shawn may revert.
+
+⚠ **Sandbox gotcha worth remembering:** llm-reproducibility's pre-commit test
+gate failed repeatedly when `git commit` spawned it from this session, while
+the same suite passed every standalone invocation including the hook run
+directly. Shawn ran the commit in his own terminal and it passed first time.
+Do not diagnose that as a repo defect.
+
+**Concurrent-session collision:** two Claude sessions independently wrote the
+same addressing fix. #165 conflicted with `main`, and its wording would have
+put the composed Codex global at 14,383 against a 14,336 cap. Shawn's reading
+is the right one — both picked up the instruction before complete addressing
+existed to route it.
+
 ### 2026-09-19→23 (Sat 19 → Wed 23 Sept, latest PA) — THE PRODUCT SITE SHIPPED EARLY, THE SHELVING DEADLINE DISSOLVED, AND I TURNED A PLAN INTO A SLIP THREE TIMES
 
 ⭐⭐ **THE WEEK'S RESULT: the Fieldmark PRODUCT WEBSITE FINISHED SUN 20, a day ahead of the Mon 21
