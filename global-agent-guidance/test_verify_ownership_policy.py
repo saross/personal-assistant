@@ -21,13 +21,29 @@ class OwnershipPolicyVerifierTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.policy = verifier.load_policy(ROOT / "ownership.toml")
 
+    # Codex cases are OS-probed by default. The nested-register case is the
+    # deliberate exception: the verifier opens an OS target with os.open, which
+    # the ownership hook cannot mediate, and the Codex profile carries no
+    # recursive read glob for it. Labelling it tool-layer records the real
+    # verification requirement instead of asserting an OS guarantee that the
+    # renderer does not produce (GPT review, 2026-09-23).
+    CODEX_TOOL_LAYER_CASES = {"codex-lane-claude-observations"}
+
     def test_enforcement_layers_separate_os_from_tool_checklists(self) -> None:
         claude = verifier.cases_for(self.policy, "claude")
         codex = verifier.cases_for(self.policy, "codex")
         self.assertTrue(claude)
         self.assertTrue(codex)
         self.assertEqual({case["enforcement"] for case in claude}, {"tool-layer"})
-        self.assertEqual({case["enforcement"] for case in codex}, {"os"})
+
+        os_cases = [c for c in codex if c["id"] not in self.CODEX_TOOL_LAYER_CASES]
+        tool_cases = [c for c in codex if c["id"] in self.CODEX_TOOL_LAYER_CASES]
+        self.assertTrue(os_cases)
+        self.assertEqual({case["enforcement"] for case in os_cases}, {"os"})
+        self.assertEqual(
+            {case["id"] for case in tool_cases}, self.CODEX_TOOL_LAYER_CASES,
+            "every declared Codex tool-layer case must be present in the policy")
+        self.assertEqual({case["enforcement"] for case in tool_cases}, {"tool-layer"})
 
     def test_owner_first_rule_covers_an_unregistered_future_agent(self) -> None:
         rule = next(

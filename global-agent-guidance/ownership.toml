@@ -311,7 +311,7 @@ agent = "codex"
 operation = "open-write"
 path = "~/worktrees/cv-and-applications/sol-cv-entry/wiki/claude-observations.md"
 expected = "deny"
-enforcement = "os"
+enforcement = "tool-layer"
 
 [[verification_cases]]
 id = "codex-pa-memory-symlink"
