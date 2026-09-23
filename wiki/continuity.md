@@ -2317,6 +2317,18 @@ is identical whether it carries one entry or five.
   `git worktree list` is clean as of `7a8c45f`. Then Shawn runs clone
   preparation and activation. The substack and llm-reproducibility lane paths
   are still absent, so the activation diff is not ready until they exist.
+  ↻ **CORRECTED 2026-09-24 (GPT):** the order above is wrong, and the
+  worktree was not the last blocker. The steps are: (a) Astra fixes the
+  clone helper, whose batch limitation blocks both lanes; (b) Shawn runs clone
+  preparation for both; (c) Astra renders the activation diff; (d) Shawn
+  activates. `prepare()` drops only the selected lane before
+  `validate_admissions`, which inspects every Codex lane's `.git`, so each
+  absent lane fails the other's run (`~/gpt-hub/scripts/prepare_admitted_clone.py:137`;
+  `~/gpt-hub/config/admitted_git_lanes.py`, `validate_admissions`). Astra
+  recorded this at 23:29 on the 23rd in
+  `~/gpt-hub/integration-records/2026-09-23-lane-admission-follow-ups.md`,
+  before the handoff. Separately, `install-agents.sh --install` has not been
+  rerun: `~/.codex/AGENTS.md` (mtime 13 Sept) lacks the #164 addressing text.
 - ⏳ **`AGENTS.md` for substack and llm-reproducibility** — GPT's to write from
   each repo's shared guidance. Not drafted by Claude this time, deliberately.
 - ⛔ **fieldmark-docs-staging cannot have a lane.** It is org-owned
