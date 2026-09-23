@@ -305,11 +305,11 @@ expected = "deny"
 enforcement = "os"
 
 [[verification_cases]]
-id = "codex-project-claude-observations"
+id = "codex-lane-claude-observations"
 rule_id = "codex-claude-repository-surfaces"
 agent = "codex"
 operation = "open-write"
-path = "~/Code/substack/wiki/claude-observations.md"
+path = "~/worktrees/cv-and-applications/sol-cv-entry/wiki/claude-observations.md"
 expected = "deny"
 enforcement = "os"
 
