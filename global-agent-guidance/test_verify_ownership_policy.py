@@ -58,12 +58,14 @@ admitted_by = "shawn"
             candidate.write_text(text)
             return verifier.load_policy(candidate)
 
-    def test_live_policy_admits_exactly_the_three_reviewed_lanes(self) -> None:
-        """Three real admissions, every field pinned.
+    def test_live_policy_admits_exactly_the_five_reviewed_lanes(self) -> None:
+        """Five real admissions, every field pinned.
 
-        map-reader-llm (2026-09-11), map-reader-bench (2026-09-13), and
-        cv-and-applications (2026-09-22). A further admission must extend
-        this assertion deliberately, with its own review.
+        map-reader-llm (2026-09-11), map-reader-bench (2026-09-13),
+        cv-and-applications (2026-09-22), and substack plus
+        llm-reproducibility (both 2026-09-23, admitted as one batch). A
+        further admission must extend this assertion deliberately, with its
+        own review.
         """
         self.assertEqual(self.policy.get("admitted_clones", []), [{
             "id": "codex-map-reader-llm-phase2",
@@ -98,9 +100,31 @@ admitted_by = "shawn"
             "clone_mode": "full-single-branch",
             "admitted_on": "2026-09-22",
             "admitted_by": "shawn",
+        }, {
+            "id": "codex-substack-entry",
+            "agent": "codex",
+            "repository": "~/Code/substack",
+            "lane_path": "~/worktrees/substack/sol-substack-entry",
+            "remote": "https://github.com/saross/substack.git",
+            "branch_namespace": "sol/*",
+            "storage": "independent-clone",
+            "clone_mode": "full-single-branch",
+            "admitted_on": "2026-09-23",
+            "admitted_by": "shawn",
+        }, {
+            "id": "codex-llm-reproducibility-entry",
+            "agent": "codex",
+            "repository": "~/Code/llm-reproducibility",
+            "lane_path": "~/worktrees/llm-reproducibility/sol-repro-entry",
+            "remote": "https://github.com/saross/llm-reproducibility.git",
+            "branch_namespace": "sol/*",
+            "storage": "independent-clone",
+            "clone_mode": "full-single-branch",
+            "admitted_on": "2026-09-23",
+            "admitted_by": "shawn",
         }])
 
-    LIVE_ADMISSIONS = 3   # the fixture below is appended to the live policy
+    LIVE_ADMISSIONS = 5   # the fixture below is appended to the live policy
 
     def test_well_formed_admission_is_accepted(self) -> None:
         policy = self.load_with(self.ADMISSION)
