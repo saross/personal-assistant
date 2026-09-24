@@ -159,7 +159,7 @@ the checks aimed at the paper had caught, either before submission or in the
 corrections register kept since:
 
 - **Missed carriers.** The register of post-submission corrections listed only
-  table files. Supplement A restates the same figures in prose, so its discovery
+  tables. Supplement A restates the same figures in prose, so its discovery
   totals (242 tools and 154 verified, corrected to 241 and 153), its per-model
   and per-journal figures, and a subsection describing three rows since repaired
   all went out uncorrected. They would have stayed that way at revision.
@@ -284,6 +284,13 @@ streamlining session already on the task list (private task inbox, capture of
    than re-checking its listed items? Examples: extracting its claims for another
    purpose, or tracing every place a figure appears rather than every place a
    register names. (Paper B: orthogonal framing.)
+   **Proposal:** the design rule, a catalogue of passes, a three-question drill,
+   and a pilot at Paper B's revision are in
+   [`orthogonal-verification.md`](orthogonal-verification.md). The organising
+   idea is the *traversal key*: every check walks a list and is blind to what
+   its list omits, so an orthogonal pass is one that walks a different list,
+   ideally by building something from the artefact that will not compose if
+   the artefact is wrong.
 
 ## How to update this document
 
