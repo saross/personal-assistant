@@ -151,6 +151,39 @@ are the raw material from which new guards have been built.
 *escapes*. No verifier has been tested with seeded errors, and the manual log
 has no denominator.
 
+### 4.1 Escapes, found by accident: Paper B (2026-09-24)
+
+Compiling this document included a read-only pass over Paper B, to extract its
+failure modes for §6. That pass found errors in the submitted paper that none of
+the checks aimed at the paper had caught, either before submission or in the
+corrections register kept since:
+
+- **Missed carriers.** The register of post-submission corrections listed only
+  table files. Supplement A restates the same figures in prose, so its discovery
+  totals (242 tools and 154 verified, corrected to 241 and 153), its per-model
+  and per-journal figures, and a subsection describing three rows since repaired
+  all went out uncorrected. They would have stayed that way at revision.
+- **Four consistency issues.** "Confabulated" is defined three ways, one per
+  stage. "Misattribution" is used in two senses, one of which overlaps
+  "confabulated". One journal's confabulation rate appears as 93%, 82%, and 78%
+  on unstated denominators. And the cause of that rate is argued both ways.
+
+All are now recorded for the revision round, with every corrected figure
+re-derived from the repaired data. Paper B's registers are in a private
+repository. The preprint is public at [osf.io/m376w](https://osf.io/m376w/), and
+the journal's open peer review will publish the reviews and responses alongside
+the article.
+
+**Why the register missed them.** Its discipline, "re-verify before applying",
+checks every carrier it lists. It cannot find a carrier it never listed. The
+pass that found them asked the paper a *different question*. That is Paper B's
+own orthogonal framing (§5.2) working on Paper B.
+
+**What it shows here.** Strictly, these errors escaped the checks around Paper
+B, not the guards inventoried in §3. What the episode shows is *how* escapes get
+found, and it is the nearest thing to an escape measurement in this document. It
+was also accidental; §7, question 9, asks whether to make it deliberate.
+
 ## 5. Weaknesses the documents themselves admit
 
 1. **Anchors check existence, not truth.** "The file existing does *not* verify
@@ -194,7 +227,7 @@ direction.
 | --- | --- | --- |
 | **Independence of context.** "Freshness alone is not enough": a verifier can be captured by the artefact it audits | Proposer–verifier pairs with a pure-transfer hand-off (§3.3). **But session-state claims** (continuity notes, standups, recaps) are checked only by the session that wrote them | Partly |
 | **External re-grounding.** "Each verdict terminated outside the model" | Registry re-queries (§3.3); anchor resolution against git (§3.2). Zotero and URLs are stubs | Partly |
-| **Orthogonal framing.** "Start from the evidence and re-derive each claim, rather than start from the claim and seek its confirmation" | Registry re-derivation for bibliographic facts. Anchors confirm that the cited file exists, which is the confirmation direction the paper warns against. The narrative is unchecked (§5, item 5) | Weakest |
+| **Orthogonal framing.** "Start from the evidence and re-derive each claim, rather than start from the claim and seek its confirmation" | Registry re-derivation for bibliographic facts. Anchors confirm that the cited file exists, which is the confirmation direction the paper warns against. The narrative is unchecked (§5, item 5). The one clear demonstration so far was accidental (§4.1) | Weakest |
 | **Procedure over pleading.** "Encode requirements that matter as workflow steps, not as exhortations" | The anchor gate, confidence binding, digest filter, citation pre-pass, and no-bypass loops are procedure. The read-side and write-side rules, the core of the apparatus, are still pleading | Partly |
 | **Persistent external state, with tombstones.** Record "not only what was kept but what was rejected and why" | Continuity and observation registers; killed and superseded tasks archived, not deleted; corrections struck through with a dated reason, not erased | Largely built |
 | **Stage-gated workflows with human checkpoints.** "'This stage failed' is an output the tool must be able to produce" | `VERIFICATION PENDING`; iterate loops that stop on PARTIAL, UNVERIFIABLE, no progress, or the cap, and flag it; pre-run and phase-gate audits | Built for research pipelines |
@@ -245,6 +278,12 @@ streamlining session already on the task list (private task inbox, capture of
    equivalent to the digest's. For example, a handoff could mark which
    statements were re-verified at writing time, and the next session could treat
    every other statement as a pointer.
+9. **Make orthogonal passes deliberate.** §4.1 found escapes by accident, while
+   using a paper as input to a different task. Before a revision, a resubmission,
+   or any artefact's release, should a pass run that *uses* the artefact rather
+   than re-checking its listed items? Examples: extracting its claims for another
+   purpose, or tracing every place a figure appears rather than every place a
+   register names. (Paper B: orthogonal framing.)
 
 ## How to update this document
 
