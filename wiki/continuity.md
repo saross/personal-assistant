@@ -2255,6 +2255,99 @@ reopen settled questions:
 
 ## Recent session logs
 
+### 2026-09-24→30 (Thu 24 → Wed 30 Sept, latest PA) — MOVE WEEK CLOSED, THE ORDERS REACHED THE LAWYER, AND AN ORTHOGONAL PASS FOUND WHAT PAPER B'S CHECKS MISSED
+
+⭐⭐ **MOVE WEEK IS DONE.** The moving sale ran Sat 26: about 40% of items sold, cheaply, but the
+bike and all but one of the garden tools went. The Salvos and kerbside collections were Mon 28.
+**The car was sold Tue 29 at 10:00 for AUD 7,200, paid in full**, with a receipt drawn from
+Service NSW requirements (`~/Documents/sync/Personal/car-sale/`, Markdown and Word). The shelving
+sold for $350; the buyer collects it after disassembly this week. **The drive is 22–25 Oct.** Red
+Truck is deliberately undecided until ~Fri 9 Oct. There are no house offers above the minimum;
+Bart is weighing an auction and has spoken to the lawyer. The rent-or-hold decision is deferred
+(inbox). ⇒ **A quiet fortnight** of recovery, waiting on the house, catching up on work, and
+packing.
+
+⭐⭐ **CONSENT ORDERS SENT TO SOPHIE AND ADELA, MON 28.** Shawn finalised the instructions (3.5h;
+Adela's overnight replies raised further issues). Claude then ran a consistency review:
+- **Word = Markdown** for all three documents, checked mechanically.
+- **An unlogged change** to the court's Part 10.2 sentence (the build added an Oxford comma).
+- **Four mismatches** between the corrections list and the change log.
+- A legal-reference agent confirmed ss 90ST, 90SK, 4AA, and 106A. It found that **order 1's
+  s 44(5)(b) basis is wrong in kind**: the paragraph is a condition on the right to apply, not a
+  power to make an order. That went to Sophie **as a question, not a change** (Shawn: "good call").
+
+The v2 package was rebuilt, and v1 → v2 differs by exactly two lines. The review report is at
+`~/Documents/sync/Personal/Separation/reports/consent-orders-consistency-review-2026-09-28.md`.
+On **Tue 29, Sophie is updating the orders**, and Shawn emailed her a list of specific errors
+(`…/reports/consent-orders-specific-errors-for-sophie-2026-09-29.md`). **Target: filing this
+week.**
+
+⭐⭐ **THE ANTI-CONFABULATION APPARATUS IS DOCUMENTED AND PUBLIC** (PA PR #166, merged as
+`c017639`): `wiki/docs/anti-confabulation-apparatus.md` and `wiki/docs/orthogonal-verification.md`.
+Compiling it required a read-only sweep of Paper B, and **that sweep found errors none of the
+paper's checks had caught**. The corrections register listed only tables, so Supplement A still
+carries 242/154 where the correct figures are 241/153. There are also four inconsistencies. All
+were re-derived from the repaired data and recorded on **paper-b PR #25** (open; `d850359`,
+`fa14576`). ⭐ Shawn named this a demonstration of orthogonal framing. The **traversal-key**
+explanation ("every check walks a list and is blind to what the list omits") became the doc and
+a craft-notebook drill. **Renewal of the apparatus is planned for an infrastructure day, Tue 29
+or after** (inbox).
+
+⭐ **CAREER.**
+- **Arcadia: invited to Stage 2** (email of 25 Sept, 19:52 UTC). Two questions, 250 words in
+  total, due **21:59 Thu 1 Oct, Sydney**. The CAIF project is content-mapped and **Q1 drafted
+  Tue 29**; the revision with Fable and Q2 follow.
+- **ARDC: follow-up interview Mon 5 Oct, 11:30–12:15 AEDT.**
+- **Cosmos Ventures:** Shawn's own draft (`cv-and-applications@1c57ae2`, corrected `40129f9`),
+  then a critical-friend read. Now **dated: submit Mon 5 Oct evening or Tue 6 Oct morning**, after
+  llm-reproducibility readiness work (inbox). Priority order: Arcadia, llm-repro, Cosmos.
+- Denmark Jan 2027 (surgery 13 Jan): parked unless Arcadia advances.
+
+**EFN.** The HECVAT went to Flinders Mon 28. The five website-approval emails went Thu 24;
+replies are due Thu 1 Oct and get actioned Fri 2. **CSIRO Mineral Resources wants a custom
+"mini-Enterprise" package (~$30–40k)**: a question for Penny and Steve, and possibly a new
+standard tier. Nathan's features meeting is on Fri 2 Oct; Jens's introductions (TERN, Agriculture,
+AuScope) are aimed at eResearch Australasia. **The company-site handover is carried from W38**
+(inbox).
+
+**INFRASTRUCTURE AND ONE-OFFS.**
+- **Claude Desktop login fixed.** A missing `~/.local/share/applications/mimeinfo.cache` masked
+  the `claude://` handler; fixed with `update-desktop-database`. The app regenerates its desktop
+  entry, so this may recur.
+- **QNAP → Vantec mirror synced and verified** (Sun 27). The procedure is now in the network
+  reference (data `11dd62d`).
+- **The 2009 permanent-residence application was recovered** from Adela's backup to
+  `Documents - 2009-2014/Personal/Immigration/2009-pr-application-from-adela-backup/`.
+
+⚠ **MY ERRORS THIS WEEK:**
+- The car handover recorded as "evening", from a stale 15 Sept note, when the calendar said
+  10:00. Fixed in data `e03a8cb`. This is the claude-obs 88 pattern again.
+- "The censuses would catch all Paper B findings" overclaimed; a reading pass is needed for the
+  argumentative contradiction.
+- A build-script note slipped into a Sophie-facing document before I caught it.
+
+**Hours:** W39 closed at **44.5h**, seven days with none off. **W40 to date 15.0h** (Mon 6.5,
+Tue 8.5). The 22:00 stop held Mon, was broken Tue (Arcadia).
+
+**Held over / open:**
+- ⏰ **Arcadia, 21:59 Thu 1 Oct** · Sophie's revised orders and **filing this week** · Bart's
+  auction decision.
+- ⏰ **Fri 2 Oct:** stitches out · Nathan's meeting · approvals actioned · OFX/TorFX · the
+  **combined W39+W40 weekly review, Fri–Sun**.
+- **paper-b PR #25** is open (collaborative, Brian to see). Its worktree is at
+  `~/worktrees/2026-mq-llm-dh-judgement-paper-b/claude-revision-register`; remove it after the
+  merge. Census pilot at revision (inbox).
+- **Working-notes candidates, held over for Shawn's verdict:**
+  (1) an orthogonal pass (a different task, a different traversal key) found errors in Paper B
+  that its register-driven checks could not;
+  (2) GIO takes MIME registrations from `mimeinfo.cache`, so a user-folder desktop entry with no
+  cache masks the system registration;
+  (3) Markdown tables have no widths, so Google Docs and LibreOffice mangle them; build Word files
+  with fixed widths instead.
+- Still open from earlier: the archive-drift gate; the session-hook gates (inbox row of
+  2026-09-24); agent mail for cv-and-applications; the pending user-obs sets, now including this
+  session's.
+
 ### 2026-09-22→23 (Mon 22 → Wed 23 Sept, latest GPT) — THREE REPOS ONBOARDED TO CODEX, FIVE LANES ADMITTED, AND THE REVIEWER CAUGHT ME OVERCLAIMING THREE TIMES
 
 ⭐ **GPT (Astra) is now enabled in three more repositories: cv-and-applications,
