@@ -2954,3 +2954,36 @@ and it passed immediately. If a "try it in your terminal" offer would have
 been welcome three tool calls in rather than ten, that is a habit worth
 forming — I currently treat handing work back as a last resort rather than a
 diagnostic.
+
+## 2026-09-24→30 (PA — orders sent, move week closed, anti-confabulation doc, Paper B errors) — Drafted candidates (pending review)
+
+Drafted by Claude at handoff. Accept / edit / discard / replace. Silence holds
+them over; it does not discard them.
+
+**Candidate A — the traversal-key explanation of orthogonal verification.** You
+said it was "the best explanation of orthogonal verification that I've
+encountered" and asked for it to be captured and elaborated. It became
+`wiki/docs/orthogonal-verification.md` and a craft-notebook drill. Worth
+confirming what made it land: the naming ("traversal key"), the Harris-matrix
+analogy, or the step from "what check finds what I missed?" to "what list does
+my check walk?"
+
+**Candidate B — routing order 1's legal defect to Sophie as a question, not a
+change.** You called it a "good call". The agent found s 44(5)(b) was the
+wrong kind of provision for an operative order; I put it in the companion
+documents for her judgement rather than editing the orders. Possibly a general
+rule: in a lawyer's document, a legal finding becomes a question, and a
+factual error becomes a correction.
+
+**Candidate C — checking your own Cosmos draft against the verified-figures
+register.** You said "good catches". repliCATS isn't machine learning, the
+"probably wrong" claim overstated the source, and the JAS "paying" claim was
+unsupported. The catches came from yesterday's corrections register, not from
+general knowledge. Worth knowing whether you want that done by default whenever
+you hand me prose that makes factual claims.
+
+**Candidate D — I gave you the wrong car-handover time.** I said "evening"
+from a stale 15 Sept note, and you corrected it against your calendar. It's the
+same failure as claude-obs 88, a week after I recorded it. If you want a
+standing rule that I check the calendar before stating any time, that would be
+worth recording.

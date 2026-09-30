@@ -1812,3 +1812,70 @@ wrong diagnosis.
 when something else runs it, say so and offer the one-minute human test before
 the fourth diagnostic. "Can you run this in your terminal?" is cheap and
 decisive, and I reached for it far too late.
+
+## claude-obs 94 — 2026-09-29: Shawn learns a skill by getting the mechanism named, then asks to train it
+
+**Pattern.** Shawn said he finds serendipitous orthogonal passes "extremely
+powerful" but can't construct them on demand, and asked how to plan them. When
+the explanation named the mechanism (a traversal key: every check walks a list
+and is blind to what it omits), he said that was the mental-model switch he
+struggles to make, and asked for it to be captured, elaborated, and made into
+something he could practise.
+
+**Lesson.** For this user, a named mechanism with a domain analogy (the Harris
+matrix) is worth more than a longer list of techniques. He wants the
+transferable model, and then a way to rehearse it.
+
+**How to apply.** When Shawn asks "how do I do X on purpose?", look for the one
+mechanism that explains why X works when it happens by accident, name it,
+ground it in archaeology where possible, and offer a short drill. Put it in his
+craft notebook, not only in chat.
+
+## claude-obs 95 — 2026-09-28: the stale-note failure recurred a week after I logged it
+
+**Pattern.** I stated the car handover as "Tue 29 evening", taken from a
+15 Sept note in FOCUS.md, and repeated it across the standup, the focus file,
+and the recap. Shawn corrected it: the calendar said 10:00. This is claude-obs
+88's shape exactly: reusing a record instead of re-reading the source.
+
+**Lesson.** Logging a failure didn't prevent it. The trigger that should have
+fired was the note's **age**: a two-week-old line about a date that had since
+been renegotiated. Times and dates of appointments have one authority, the
+calendar, and FOCUS prose is not it.
+
+**How to apply.** Before stating any appointment time or date, read it from the
+calendar (personal and work) in the same turn. Treat any FOCUS or continuity
+line older than a few days about a scheduled event as a pointer to check, never
+as the answer.
+
+## claude-obs 96 — 2026-09-28: I spent seven renders on a cosmetic underscore while Shawn slept
+
+**Pattern.** Building the car-sale receipt, I iterated about seven times on a
+LibreOffice quirk that wrapped one character under the signature lines. It was
+cosmetic, and in the morning Shawn needed a Word file anyway, because Google
+Docs mangled the Markdown tables.
+
+**Lesson.** When the deliverable is already usable, further polish of a
+rendering artefact is waste, and here it also chose the wrong format. The
+right question after the first render was "what will he print or open this
+with?"
+
+**How to apply.** Ask, or infer, the destination format first (Google Docs, so
+Word with fixed widths). Stop polishing at "usable", note the cosmetic issue in
+one line, and move on.
+
+## claude-obs 97 — 2026-09-25: Shawn extends deadlines on purpose, with a stated reason and a conditional order
+
+**Pattern.** Shawn kept the promise to Brian by sending a draft, then said "I
+am deciding on purpose that I can't get the quality of the pitch up to par by
+today" and set a conditional order: Cosmos first after the move weekend,
+unless Arcadia invites, in which case Arcadia comes first. Later he adopted a
+concrete date (Mon 5 / Tue 6 Oct) on Fable's advice.
+
+**Lesson.** These are decisions, not slips: they're explicit, reasoned, and
+come with an order of priority. The accountability value is in making the
+extension deliberate and dated, which he does when asked plainly.
+
+**How to apply.** When a fuse is about to pass, ask once: extend on purpose, to
+what date, and ahead of or behind what? Record the answer as a decision.
+Escalate only if an extension comes without a date or a reason.
